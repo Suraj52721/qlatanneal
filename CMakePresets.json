@@ -1,0 +1,54 @@
+{
+  "version": 4,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 19,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "cpu-only",
+      "displayName": "CPU-only (no CUDA, no MPI)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/cpu-only",
+      "cacheVariables": {
+        "QANNEAL_ENABLE_CUDA": "OFF",
+        "QANNEAL_ENABLE_MPI": "OFF",
+        "QANNEAL_BUILD_TESTS": "ON",
+        "QANNEAL_BUILD_PYTHON": "ON"
+      }
+    },
+    {
+      "name": "cpu-mpi",
+      "displayName": "CPU + MPI (OpenMPI recommended)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/cpu-mpi",
+      "cacheVariables": {
+        "QANNEAL_ENABLE_CUDA": "OFF",
+        "QANNEAL_ENABLE_MPI": "ON",
+        "QANNEAL_BUILD_TESTS": "ON",
+        "QANNEAL_BUILD_PYTHON": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "cpu-only",
+      "configurePreset": "cpu-only"
+    },
+    {
+      "name": "cpu-mpi",
+      "configurePreset": "cpu-mpi"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "cpu-only",
+      "configurePreset": "cpu-only"
+    },
+    {
+      "name": "cpu-mpi",
+      "configurePreset": "cpu-mpi"
+    }
+  ]
+}

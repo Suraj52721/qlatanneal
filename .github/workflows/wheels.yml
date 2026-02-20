@@ -1,0 +1,54 @@
+name: wheels
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  build-wheels:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            cibw_archs: x86_64
+          - os: macos-13
+            arch: x86_64
+            cibw_archs: x86_64
+          - os: macos-14
+            arch: arm64
+            cibw_archs: arm64
+          - os: windows-latest
+            arch: AMD64
+            cibw_archs: AMD64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tooling
+        run: python -m pip install -U pip cibuildwheel
+
+      - name: Build wheels
+        env:
+          CIBW_BUILD: "cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "pp* *-win32 *-manylinux_i686 *-musllinux_*"
+          CIBW_TEST_COMMAND: 'python -c "import qanneal, qanneal._qanneal; print(qanneal.__version__)"'
+          CIBW_ENVIRONMENT: 'CMAKE_ARGS="-DQANNEAL_BUILD_PYTHON=ON"'
+          CIBW_ARCHS_LINUX: ${{ matrix.cibw_archs }}
+          CIBW_ARCHS_MACOS: ${{ matrix.cibw_archs }}
+          CIBW_ARCHS_WINDOWS: ${{ matrix.cibw_archs }}
+        run: python -m cibuildwheel --output-dir dist
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*.whl
