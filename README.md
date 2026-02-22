@@ -199,6 +199,7 @@ python examples/python/sqa_basic.py
 python examples/python/metrics_plot.py
 python examples/python/parallel_tempering.py
 python examples/python/sqa_trace_full.py
+python examples/python/graph_editor_gui.py
 ```
 
 ---
