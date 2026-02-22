@@ -1,6 +1,7 @@
 """qanneal Python package."""
 
 from ._qanneal import *  # noqa: F401,F403
+from .solver import SolveResult, solve, auto_schedule_sa, auto_schedule_sqa  # noqa: F401
 
 __version__ = version_string()
 
@@ -36,4 +37,8 @@ __all__ = [
     "SQAAnnealer",
     "magnetization",
     "overlap",
+    "SolveResult",
+    "solve",
+    "auto_schedule_sa",
+    "auto_schedule_sqa",
 ]

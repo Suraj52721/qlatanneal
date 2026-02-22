@@ -19,8 +19,12 @@ from qanneal import (
 
 - `QUBO(Q: ndarray)`  
   `Q` is a dense `N×N` matrix (diagonal = linear terms, off-diagonal = couplings).
+- `QUBO(bqm)`  
+  Accepts a dimod `BinaryQuadraticModel` (BINARY). If SPIN, it will call `to_binary()` when available.
 - `QUBO(entries: list[tuple[i, j, value]], n: int)`  
   Sparse-style constructor; entries are summed into a dense matrix.
+- `QUBO(entries: dict[(i, j), value], n: int)`  
+  Dict-style constructor; keys are `(i, j)` index tuples.
   `to_ising() -> DenseIsing`
 - `DenseIsing(h: ndarray, J: ndarray, c: float = 0.0)`
 - `SparseIsing(h: ndarray, edges: list[SparseEdge], n: int, c: float = 0.0)`

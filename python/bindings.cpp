@@ -132,12 +132,80 @@ PYBIND11_MODULE(_qanneal, m) {
             std::vector<double> qv = array_to_vector_2d(Q, n);
             return qanneal::QUBO(std::move(qv), n);
         }))
+        .def(py::init([](py::object bqm) {
+            if (!py::hasattr(bqm, "variables") || !py::hasattr(bqm, "linear") || !py::hasattr(bqm, "quadratic")) {
+                throw std::invalid_argument("QUBO expects a dimod BinaryQuadraticModel-like object.");
+            }
+
+            if (py::hasattr(bqm, "vartype")) {
+                const std::string vartype = py::str(bqm.attr("vartype"));
+                if (vartype.find("BINARY") == std::string::npos) {
+                    if (py::hasattr(bqm, "to_binary")) {
+                        py::object converted = bqm.attr("to_binary")();
+                        if (py::isinstance<py::tuple>(converted)) {
+                            bqm = converted.cast<py::tuple>()[0];
+                        } else {
+                            bqm = converted;
+                        }
+                    } else {
+                        throw std::invalid_argument("QUBO expects a BINARY dimod BQM or a BQM with to_binary().");
+                    }
+                }
+            }
+
+            py::list vars = py::list(bqm.attr("variables"));
+            const std::size_t n = vars.size();
+            if (n == 0) {
+                throw std::invalid_argument("QUBO BQM must have at least one variable.");
+            }
+
+            py::dict index;
+            for (std::size_t i = 0; i < n; ++i) {
+                index[vars[i]] = py::int_(i);
+            }
+
+            std::vector<double> qv(n * n, 0.0);
+
+            for (auto item : bqm.attr("linear").attr("items")()) {
+                auto pair = item.cast<py::tuple>();
+                const std::size_t i = py::cast<std::size_t>(index[pair[0]]);
+                const double bias = py::cast<double>(pair[1]);
+                qv[i * n + i] += bias;
+            }
+
+            for (auto item : bqm.attr("quadratic").attr("items")()) {
+                auto pair = item.cast<py::tuple>();
+                auto key = pair[0].cast<py::tuple>();
+                const std::size_t i = py::cast<std::size_t>(index[key[0]]);
+                const std::size_t j = py::cast<std::size_t>(index[key[1]]);
+                const double bias = py::cast<double>(pair[1]);
+                qv[i * n + j] += 0.5 * bias;
+                qv[j * n + i] += 0.5 * bias;
+            }
+
+            return qanneal::QUBO(std::move(qv), n);
+        }))
         .def(py::init([](const std::vector<std::tuple<std::size_t, std::size_t, double>> &entries,
                          std::size_t n) {
             std::vector<std::pair<std::pair<std::size_t, std::size_t>, double>> native;
             native.reserve(entries.size());
             for (const auto &e : entries) {
                 native.push_back({{std::get<0>(e), std::get<1>(e)}, std::get<2>(e)});
+            }
+            return qanneal::QUBO(native, n);
+        }), py::arg("entries"), py::arg("n"))
+        .def(py::init([](py::dict entries, std::size_t n) {
+            std::vector<std::pair<std::pair<std::size_t, std::size_t>, double>> native;
+            native.reserve(entries.size());
+            for (auto item : entries) {
+                const auto key = item.first.cast<py::tuple>();
+                if (key.size() != 2) {
+                    throw std::invalid_argument("QUBO dict keys must be (i, j) tuples.");
+                }
+                const std::size_t i = py::cast<std::size_t>(key[0]);
+                const std::size_t j = py::cast<std::size_t>(key[1]);
+                const double value = py::cast<double>(item.second);
+                native.push_back({{i, j}, value});
             }
             return qanneal::QUBO(native, n);
         }), py::arg("entries"), py::arg("n"))

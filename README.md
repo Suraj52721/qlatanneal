@@ -100,6 +100,30 @@ qubo = QUBO(entries, n=2)
 ising = qubo.to_ising()
 ```
 
+**QUBO from dict**
+```python
+from qanneal import QUBO
+
+entries = {
+    (0, 0): 1.0,
+    (1, 1): 2.0,
+    (0, 1): -1.5,
+}
+
+qubo = QUBO(entries, n=2)
+ising = qubo.to_ising()
+```
+
+**QUBO from dimod BQM**
+```python
+import dimod
+from qanneal import QUBO
+
+bqm = dimod.BinaryQuadraticModel({0: 1.0, 1: 2.0}, {(0, 1): -1.5}, vartype="BINARY")
+qubo = QUBO(bqm)
+ising = qubo.to_ising()
+```
+
 ---
 
 **Core Parameters (SQA)**
@@ -119,6 +143,37 @@ ising = qubo.to_ising()
 
 **Tracing**
 - `SQAStateTraceObserver.stride`: record every N sweeps.
+
+---
+
+**Quality-of-life helpers**
+
+`solve()` runs a full SA/SQA solve with progress + logging and multiple reads:
+
+```python
+import numpy as np
+from qanneal import solve
+
+Q = np.array([[1.0, -1.0], [-1.0, 2.0]], dtype=float)
+result = solve(Q, method="sqa", reads=10, return_bits=True)
+print(result.best_energy)
+print(result.best_sample)
+```
+
+Auto schedules:
+```python
+from qanneal import auto_schedule_sa, auto_schedule_sqa
+
+sa_schedule = auto_schedule_sa(steps=50)
+sqa_schedule = auto_schedule_sqa(steps=50)
+```
+
+`solve()` accepts:
+- `numpy` QUBO matrix
+- `dict` or `list` entries
+- `dimod` BQM (if installed)
+- `networkx` graph (if installed)
+- `DenseIsing` / `SparseIsing`
 
 ---
 
