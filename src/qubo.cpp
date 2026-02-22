@@ -14,6 +14,22 @@ QUBO::QUBO(std::vector<double> q, std::size_t n)
     }
 }
 
+QUBO::QUBO(const std::vector<std::pair<std::pair<std::size_t, std::size_t>, double>> &entries,
+           std::size_t n)
+    : q_(n * n, 0.0), n_(n) {
+    if (n_ == 0) {
+        throw std::invalid_argument("QUBO size must be > 0.");
+    }
+    for (const auto &entry : entries) {
+        const auto i = entry.first.first;
+        const auto j = entry.first.second;
+        if (i >= n_ || j >= n_) {
+            throw std::invalid_argument("QUBO entry index out of range.");
+        }
+        q_[i * n_ + j] += entry.second;
+    }
+}
+
 DenseIsing QUBO::to_ising() const {
     // Symmetrize Q
     std::vector<double> W(q_.size());

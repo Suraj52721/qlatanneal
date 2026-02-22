@@ -132,6 +132,15 @@ PYBIND11_MODULE(_qanneal, m) {
             std::vector<double> qv = array_to_vector_2d(Q, n);
             return qanneal::QUBO(std::move(qv), n);
         }))
+        .def(py::init([](const std::vector<std::tuple<std::size_t, std::size_t, double>> &entries,
+                         std::size_t n) {
+            std::vector<std::pair<std::pair<std::size_t, std::size_t>, double>> native;
+            native.reserve(entries.size());
+            for (const auto &e : entries) {
+                native.push_back({{std::get<0>(e), std::get<1>(e)}, std::get<2>(e)});
+            }
+            return qanneal::QUBO(native, n);
+        }), py::arg("entries"), py::arg("n"))
         .def("size", &qanneal::QUBO::size)
         .def("to_ising", &qanneal::QUBO::to_ising);
 

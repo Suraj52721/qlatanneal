@@ -39,9 +39,11 @@ jobs:
       - name: Build wheels
         env:
           CIBW_BUILD: "cp311-* cp312-* cp313-*"
-          CIBW_SKIP: "pp* *-win32 *-manylinux_i686 *-musllinux_*"
+          CIBW_SKIP: "*-win32 *-manylinux_i686 *-musllinux_*"
+          CIBW_BUILD_VERBOSITY: "1"
           CIBW_TEST_COMMAND: 'python -c "import qanneal, qanneal._qanneal; print(qanneal.__version__)"'
           CIBW_ENVIRONMENT: 'CMAKE_ARGS="-DQANNEAL_BUILD_PYTHON=ON"'
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel -v -w {dest_dir} {wheel}"
           CIBW_ARCHS_LINUX: ${{ matrix.cibw_archs }}
           CIBW_ARCHS_MACOS: ${{ matrix.cibw_archs }}
           CIBW_ARCHS_WINDOWS: ${{ matrix.cibw_archs }}

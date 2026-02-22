@@ -1,0 +1,111 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{hyperref}
+
+\title{qanneal: A CPU-First Simulated Quantum Annealing Toolkit}
+\author{qanneal contributors}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report describes the mathematical foundations and software design of \texttt{qanneal}, a CPU-first simulated quantum annealing (SQA) toolkit. We detail the Ising and QUBO formulations, the Suzuki--Trotter mapping for transverse-field models, and the Monte Carlo algorithms used in classical SA and SQA. We also document the code architecture, trace observability, and practical complexity considerations.
+\end{abstract}
+
+\section{Introduction}
+Combinatorial optimization problems can often be written as minimizing a quadratic energy function over binary variables. Simulated annealing (SA) provides a classical stochastic method for approximately solving these problems. Simulated quantum annealing (SQA) extends this approach by emulating quantum fluctuations through a path-integral representation of a transverse-field Ising model. \texttt{qanneal} provides SA and SQA with reproducible schedules, sweep-level tracing, and a C++ core with Python bindings.
+
+\section{Problem Formulation}
+
+\subsection{Ising model}
+Given spins $s_i \in \{-1, +1\}$, the Ising energy is
+\begin{equation}
+E(\mathbf{s}) = \sum_i h_i s_i + \sum_{i,j} J_{ij} s_i s_j + c.
+\end{equation}
+The goal is to minimize $E(\mathbf{s})$.
+
+\subsection{QUBO}
+For binary variables $x_i \in \{0,1\}$, a quadratic unconstrained binary optimization (QUBO) instance is
+\begin{equation}
+E(\mathbf{x}) = \sum_{i,j} Q_{ij} x_i x_j.
+\end{equation}
+We map QUBO to Ising with $x_i = (1 + s_i)/2$, yielding an equivalent Ising model with transformed $h$, $J$, and constant shift $c$.
+
+\section{Simulated Annealing}
+SA performs a Markov chain over spin configurations. At each temperature $T$ (or inverse temperature $\beta$), it proposes single-spin flips and accepts them with Metropolis probability
+\begin{equation}
+P(\text{accept}) = \min\left(1, e^{-\beta \Delta E}\right).
+\end{equation}
+The schedule $\beta_0,\beta_1,\ldots$ defines the anneal.
+
+\section{Simulated Quantum Annealing}
+
+\subsection{Transverse-field Ising model}
+The quantum Hamiltonian is
+\begin{equation}
+\hat{H} = \sum_i h_i \hat{\sigma}^z_i + \sum_{i,j} J_{ij} \hat{\sigma}^z_i \hat{\sigma}^z_j - \Gamma \sum_i \hat{\sigma}^x_i.
+\end{equation}
+Here $\Gamma$ is the transverse-field strength controlling quantum fluctuations.
+
+\subsection{Suzuki--Trotter mapping}
+SQA uses a path-integral representation by discretizing imaginary time into $M$ slices. This yields a classical Ising model over $M$ replicas with nearest-neighbor coupling along the slice dimension. The effective coupling is
+\begin{equation}
+J_\perp = \frac{1}{2} \log \left(\coth \left(\frac{\beta \Gamma}{M}\right)\right).
+\end{equation}
+The algorithm then performs Monte Carlo updates over the augmented state space.
+
+\subsection{Update phases}
+\texttt{qanneal} performs two update phases per schedule step:
+\begin{itemize}
+\item Slice updates: single-spin flips within each slice.
+\item Worldline updates: collective flips of a spin across all slices.
+\end{itemize}
+Both are accepted with Metropolis probability using the effective classical energy.
+
+\section{Implementation Architecture}
+The C++ core defines model classes (DenseIsing, SparseIsing, QUBO), schedulers, and annealers. The \texttt{Backend} interface isolates the annealing logic from energy and delta-energy computation. Python bindings are provided via pybind11.
+
+\subsection{State representation}
+\texttt{State} stores spins as \texttt{int8\_t} values. \texttt{SQAState} stores data in a flattened buffer with layout:
+\begin{equation}
+\texttt{index} = (r \cdot M + t) \cdot N + i
+\end{equation}
+where $r$ is replica, $t$ is slice, and $i$ is spin.
+
+\subsection{Observability}
+Sweep-level observers record the full state, energy traces, and replica-wise energies. This enables reproducibility, diagnostics, and post-hoc analysis of the anneal.
+
+\section{Complexity Considerations}
+Let $N$ be the number of spins, $M$ the number of slices, $R$ the number of replicas, and $S$ the number of sweeps per step. For dense models, each sweep costs $O(N^2)$; for sparse models, the cost scales with the number of edges. SQA multiplies compute by $M \cdot R$.
+
+\section{Experimental Protocol (Template)}
+To compare algorithms:
+\begin{itemize}
+\item Fix a problem family and size $N$.
+\item Use identical schedules and sweep budgets.
+\item Run multiple seeds and report distributions of energies.
+\item Use sweep-level traces to study convergence and mixing.
+\end{itemize}
+
+\section{Limitations}
+\begin{itemize}
+\item CPU-first; CUDA is a planned extension.
+\item Dense models scale quadratically in memory and time.
+\item SQA is sensitive to schedule tuning and slice count.
+\end{itemize}
+
+\section{Future Work}
+\begin{itemize}
+\item CUDA backend for dense and sparse kernels.
+\item Cluster updates and improved worldline moves.
+\item MPI-based multi-node replicas.
+\item Automated schedule tuning and diagnostics.
+\end{itemize}
+
+\section{Reproducibility}
+Each annealer supports explicit RNG seeds. Sweep-level traces can be saved for deterministic replay and analysis. The project ships example scripts and unit tests for baseline verification.
+
+\end{document}

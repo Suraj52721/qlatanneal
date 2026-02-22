@@ -12,6 +12,8 @@ public:
     QUBO() = default;
 
     QUBO(std::vector<double> q, std::size_t n);
+    QUBO(const std::vector<std::pair<std::pair<std::size_t, std::size_t>, double>> &entries,
+         std::size_t n);
 
     const std::vector<double> &matrix() const { return q_; }
     std::size_t size() const { return n_; }
