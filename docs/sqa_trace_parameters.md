@@ -13,6 +13,8 @@ SQA maps a quantum transverse‑field Ising model to a classical Ising model in 
 - `replicas`: Number of independent replicas of the full Trotter system. This is like running multiple independent anneals in parallel inside one run.
 - `sweeps_per_beta`: Number of *slice updates* per step. Each sweep tries to update every spin in every slice for each replica using local Metropolis moves. This is the main sampling work at each `(beta, gamma)`.
 - `worldline_sweeps`: Number of *worldline updates* per step. Each sweep tries to flip a spin consistently across all slices in a replica. This helps move through correlated imaginary‑time configurations.
+- `cluster_sweeps`: Number of *cluster updates* per step (imaginary‑time Swendsen‑Wang‑style moves). This can dramatically improve mixing at low temperature.
+- `continuous_time_slices`: If >0, overrides `trotter_slices` with a large value to approximate the continuous‑time limit.
 - `observer.stride`: Only record every N sweeps to reduce memory. `stride=1` records every sweep.
 
 **Physical Meaning of Beta and Gamma Together**
@@ -22,7 +24,7 @@ SQA maps a quantum transverse‑field Ising model to a classical Ising model in 
 **Sweep Phases**
 `SQAStateTraceObserver` records data during two phases.
 - `SQASweepPhase.SLICE`: Local single‑slice Metropolis updates. This explores local configurations in each slice.
-- `SQASweepPhase.WORLDLINE`: Global updates that flip a spin across all slices. This changes worldlines and helps with quantum‑like collective moves.
+- `SQASweepPhase.WORLDLINE`: Worldline or cluster updates that flip a spin across all slices (and cluster moves along imaginary time). These change worldlines and help with quantum‑like collective moves.
 
 **Trace Fields (What You Get Back)**
 All of these are stored on the observer as arrays of equal length.
@@ -56,7 +58,7 @@ states = states.reshape(len(obs.state_trace), obs.replicas, obs.slices, obs.spin
 **Memory Notes**
 Recording every sweep can be large. For a rough estimate:
 ```
-records ≈ steps * (replicas * sweeps_per_beta + replicas * worldline_sweeps)
+records ≈ steps * replicas * (sweeps_per_beta + worldline_sweeps + cluster_sweeps)
 bytes ≈ records * replicas * slices * spins
 ```
 If this is too big, increase `observer.stride` or reduce slices/replicas.

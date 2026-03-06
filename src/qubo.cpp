@@ -54,8 +54,13 @@ DenseIsing QUBO::to_ising() const {
     }
 
     for (std::size_t i = 0; i < n_; ++i) {
+        // Diagonal s_i^2 = 1 contributes (1/4) W[i,i] to c.
+        c += 0.25 * W[i * n_ + i];
         for (std::size_t j = 0; j < n_; ++j) {
-            J[i * n_ + j] = 0.25 * W[i * n_ + j];
+            // Off-diagonal Ising coupling: J_{ij} = (1/2) W[i,j] for i<j.
+            // Setting the full matrix here; DenseIsing energy only reads i<j entries.
+            J[i * n_ + j] = 0.5 * W[i * n_ + j];
+            // (1/4) 1^T W 1 constant term.
             c += 0.25 * W[i * n_ + j];
         }
     }

@@ -1,254 +1,376 @@
 # qanneal
 
-Research-grade simulated quantum annealing toolkit (CPU-first, CUDA-ready).
+**Research-grade Ising/QUBO optimizer** with four annealing engines — from classical SA to the closest available CPU simulation of quantum annealing.
 
-**What it is**
-- Classical simulated annealing (SA) and simulated quantum annealing (SQA) for dense and sparse Ising/QUBO models.
-- C++ core with Python bindings (pybind11).
-- Sweep-level tracing for reproducibility and diagnostics.
-- MPI/SLURM scaffolding for multi-process runs.
+| Method | Short name | What it simulates |
+|--------|-----------|-------------------|
+| Simulated Annealing | `sa` | Classical thermal fluctuations |
+| Simulated Quantum Annealing | `sqa` | Discrete-time path-integral (Trotterized QA) |
+| SQA + Parallel Tempering | `sqapt` | QA with replica exchange on a (β, Γ) ladder |
+| Continuous-Time PIMC | `ctpimc` | Continuous-time path-integral (worldline sampling) |
 
----
-
-**Physics and Models**
-
-**QUBO**
-- Binary variables: `x_i ∈ {0,1}`
-- Energy:
-  `E(x) = Σ_i Σ_j Q_ij x_i x_j`
-- Diagonal `Q[i,i]` = linear terms, off-diagonal `Q[i,j]` = pairwise couplings.
-
-**Ising**
-- Spins: `s_i ∈ {-1,+1}`
-- Energy:
-  `E(s) = Σ_i h_i s_i + Σ_ij J_ij s_i s_j + c`
-- QUBO→Ising mapping: `x_i = (1 + s_i)/2`
-
-**SQA (path-integral picture)**
-- Transverse-field Ising model mapped to `M` Trotter slices (imaginary time).
-- Effective inter-slice coupling:
-  `J_perp = 0.5 * log(coth(βΓ/M))`
-- Two update phases per step:
-  slice updates and worldline updates.
+All engines share a unified `solve()` Python API and a C++17 core with pybind11 bindings.
 
 ---
 
-**Install**
+## Install
 
-**macOS / Linux**
 ```bash
-./setup.sh
-```
-
-**Windows (PowerShell)**
-```powershell
-.\setup.ps1
-```
-
-**Windows (Command Prompt)**
-```bat
-setup.bat
-```
-
-**Pure pip (all platforms)**
-```bash
+# From repo root (recommended)
 python -m pip install . --no-build-isolation
+
+# Editable/development
+python -m pip install -e . --no-build-isolation
+
+# Convenience scripts
+./setup.sh        # macOS / Linux
+setup.bat         # Windows cmd
+./setup.ps1       # Windows PowerShell
 ```
 
-**From PyPI (after first release)**
-```bash
-python -m pip install qanneal
-```
-
-**Windows prerequisites**
-- Visual Studio Build Tools with **Desktop development with C++**
-- CMake (e.g., `winget install Kitware.CMake`)
+Requires: Python ≥ 3.9, numpy, C++17 compiler.
+Optional: OpenMP (parallel replicas), MPI (multi-node), matplotlib (plots).
 
 ---
 
-**Quickstart (QUBO → SQA)**
-```python
-import numpy as np
-from qanneal import QUBO, SQASchedule, SQAAnnealer
+## Quickstart
 
-Q = np.array([[1.0, -1.0],
-              [-1.0, 2.0]], dtype=float)
-
-qubo = QUBO(Q)
-ising = qubo.to_ising()
-
-betas = np.linspace(0.1, 4.0, 50).tolist()
-gammas = np.linspace(5.0, 0.01, 50).tolist()
-schedule = SQASchedule.from_vectors(betas, gammas)
-
-annealer = SQAAnnealer(ising, schedule, trotter_slices=32, replicas=4, backend="cpu")
-result = annealer.run(sweeps_per_beta=20, worldline_sweeps=5)
-print(result.best_energy)
-```
-
-**QUBO from sparse entries**
-```python
-from qanneal import QUBO
-
-entries = [
-    (0, 0, 1.0),   # linear term on x0
-    (1, 1, 2.0),   # linear term on x1
-    (0, 1, -1.5),  # coupling x0*x1
-]
-
-qubo = QUBO(entries, n=2)
-ising = qubo.to_ising()
-```
-
-**QUBO from dict**
-```python
-from qanneal import QUBO
-
-entries = {
-    (0, 0): 1.0,
-    (1, 1): 2.0,
-    (0, 1): -1.5,
-}
-
-qubo = QUBO(entries, n=2)
-ising = qubo.to_ising()
-```
-
-**QUBO from dimod BQM**
-```python
-import dimod
-from qanneal import QUBO
-
-bqm = dimod.BinaryQuadraticModel({0: 1.0, 1: 2.0}, {(0, 1): -1.5}, vartype="BINARY")
-qubo = QUBO(bqm)
-ising = qubo.to_ising()
-```
-
----
-
-**Core Parameters (SQA)**
-
-**Schedule**
-- `betas`: inverse temperature values (cooling).
-- `gammas`: transverse-field values (quantum fluctuations).
-- `steps`: `len(betas)`, must equal `len(gammas)`.
-
-**Geometry**
-- `trotter_slices`: number of imaginary-time slices.
-- `replicas`: independent replicas in a single run.
-
-**Monte Carlo**
-- `sweeps_per_beta`: slice-update sweeps per step.
-- `worldline_sweeps`: worldline-update sweeps per step.
-
-**Tracing**
-- `SQAStateTraceObserver.stride`: record every N sweeps.
-
----
-
-**Quality-of-life helpers**
-
-`solve()` runs a full SA/SQA solve with progress + logging and multiple reads:
+### Solve a QUBO in one call
 
 ```python
 import numpy as np
 from qanneal import solve
 
-Q = np.array([[1.0, -1.0], [-1.0, 2.0]], dtype=float)
-result = solve(Q, method="sqa", reads=10, return_bits=True)
-print(result.best_energy)
-print(result.best_sample)
+# Encode a 3-variable QUBO: minimise x₀ + x₂ − 2x₀x₁ − 2x₁x₂
+Q = np.array([
+    [ 1.0, -2.0,  0.0],
+    [-2.0,  0.0, -2.0],
+    [ 0.0, -2.0,  1.0],
+], dtype=float)
+
+result = solve(Q, method="sqapt", reads=16, seed=0, return_bits=True)
+print(result.best_sample)   # array of bits {0, 1}
+print(result.best_energy)   # minimum QUBO energy found
 ```
 
-Auto schedules:
+### Number partition (classic NP-hard)
+
 ```python
-from qanneal import auto_schedule_sa, auto_schedule_sqa
+import numpy as np
+from qanneal import DenseIsing, solve
 
-sa_schedule = auto_schedule_sa(steps=50)
-sqa_schedule = auto_schedule_sqa(steps=50)
+# Partition numbers [3, 5, 7, 11, 13] into two groups with equal sum
+nums = np.array([3, 5, 7, 11, 13], dtype=float)
+n = len(nums)
+
+# Ising encoding: spin +1 → group A, spin -1 → group B
+h = np.zeros(n)
+J = np.zeros((n, n))
+for i in range(n):
+    for j in range(i + 1, n):
+        J[i, j] = J[j, i] = 2.0 * nums[i] * nums[j]
+
+ising = DenseIsing(h, J, c=float(np.dot(nums, nums)))
+result = solve(ising, method="sqa", reads=20, seed=42)
+spins = result.best_sample        # +1 or -1
+diff  = abs(float(np.dot(nums, spins)))
+print(f"Partition diff: {diff}")  # 0.0 = perfect split
 ```
 
-`solve()` accepts:
-- `numpy` QUBO matrix
-- `dict` or `list` entries
-- `dimod` BQM (if installed)
-- `networkx` graph (if installed)
-- `DenseIsing` / `SparseIsing`
+---
+
+## The Four Methods — When to Use Which
+
+### `sa` — Simulated Annealing
+Classical Metropolis algorithm with a temperature schedule.
+- **Use when**: fast results, simple landscapes, baseline comparisons.
+- **Control**: `sweeps_per_beta` (thermal equilibration per temperature step).
+
+### `sqa` — Simulated Quantum Annealing
+Quantum Monte Carlo in the Suzuki–Trotter formulation. The spin system is replicated
+across `trotter_slices` imaginary-time slices; flips along the time dimension mimic
+quantum tunneling through energy barriers.
+- **Use when**: landscapes have tall narrow barriers that classical SA misses.
+- **Key extra controls**: `trotter_slices`, `worldline_sweeps`, `cluster_sweeps`.
+
+### `sqapt` — SQA + Parallel Tempering *(recommended default)*
+Multiple SQA replicas run simultaneously at different `(β, Γ)` points on a ladder.
+Adjacent replicas periodically swap configurations, letting solutions discovered at
+high fluctuations (large Γ, low β) flow toward low-energy states at strong freezing.
+- **Use when**: rugged/multi-modal landscapes, moderate to hard combinatorial problems.
+- **Key extra controls**: `replicas` (ladder length), `pt_steps`, `swap_interval`.
+
+### `ctpimc` — Continuous-Time PIMC
+Samples worldlines in continuous imaginary time using Swendsen–Wang cluster updates.
+No Trotter discretisation error; better mixing in the high-Γ regime.
+- **Use when**: you want a closer analog to D-Wave sampling; density-matrix–level statistics.
+- **Key extra controls**: `ctpimc_qubits_per_update`, `ctpimc_qubits_per_chain`.
 
 ---
 
-**Observers and Traces**
+## Core Concepts
 
-**Classical SA**
-- `MetricsObserver`: energy + magnetization traces.
-- `StateTraceObserver`: sweep-level states and energies.
+### Energy conventions
 
-**SQA**
-- `SQAMetricsObserver`: energy + magnetization traces.
-- `SQAStateTraceObserver`: full sweep-level state trace,
-  per-replica energies, and phase (slice vs worldline).
+**QUBO** (binary variables x ∈ {0, 1}):
+```
+E(x) = Σᵢ Σⱼ Qᵢⱼ xᵢ xⱼ
+```
+- `Q[i,i]`: linear (bias) term for variable i.
+- `Q[i,j]` (i ≠ j): quadratic coupling. Include both Q[i,j] and Q[j,i] for symmetric problems.
 
-See `docs/sqa_trace_parameters.md` for a full explanation.
+**Ising** (spins s ∈ {−1, +1}):
+```
+E(s) = Σᵢ hᵢ sᵢ  +  Σᵢ<ⱼ Jᵢⱼ sᵢ sⱼ  +  c
+```
+- `h`: local magnetic fields.
+- `J`: pairwise coupling matrix.
+- `c`: constant energy offset (irrelevant for optimization, useful for energy tracking).
+
+**Conversion**: `x = (s + 1) / 2` — QUBO uses bits, Ising uses spins.
+`solve(..., return_bits=True)` converts the result for you.
+
+### Hamiltonian models
+
+| Class | Memory | Best for |
+|-------|--------|---------|
+| `DenseIsing(h, J, c)` | O(n²) | n ≤ ~3 000, fully connected |
+| `SparseIsing(h, edges, n, c)` | O(n + \|E\|) | sparse graphs, n up to 100 000+ |
+| `QUBO(Q)` | O(n²) | binary variables; call `.to_ising()` |
 
 ---
 
-**Examples**
+## Schedule Design
+
+Every annealer needs a **schedule** — a sequence of `(β, Γ)` or just `β` values.
+
+### Problem-adaptive schedules *(recommended)*
+
+```python
+from qanneal import auto_schedule_sa_tuned, auto_schedule_sqa_tuned, auto_ladder_sqa_tuned
+
+# For SA
+schedule = auto_schedule_sa_tuned(ising, mode="balanced")
+
+# For SQA / CT-PIMC
+schedule = auto_schedule_sqa_tuned(ising, mode="balanced")
+
+# For SQAPT — returns a (β, Γ) ladder with `replicas` points
+ladder = auto_ladder_sqa_tuned(ising, replicas=8, mode="balanced")
+```
+
+**How tuning works**: The helper probes `~256` random single-spin flips, computes the
+75th-percentile |ΔE|, and derives `β_start`/`β_end` from physical acceptance-target
+heuristics. This avoids manual tuning across problem sizes and coupling scales.
+
+| `mode` | Steps | Exploration | Use when |
+|--------|-------|------------|---------|
+| `"fast"` | 30–40 | High | Prototyping, large sweeps |
+| `"balanced"` | 60–80 | Medium | Default production |
+| `"accurate"` | 110–130 | Low | Best solution quality |
+
+### Fixed schedules *(legacy)*
+
+```python
+from qanneal import AnnealSchedule, SQASchedule
+import numpy as np
+
+# SA: linear β ramp
+schedule = AnnealSchedule.linear(beta_start=0.1, beta_end=5.0, steps=60)
+
+# SQA: paired (β, Γ) — geometric decay for Γ
+schedule = SQASchedule.from_vectors(
+    betas=np.linspace(0.1, 5.0, 60).tolist(),
+    gammas=np.geomspace(5.0, 0.01, 60).tolist(),
+)
+```
+
+---
+
+## Parameter Reference
+
+### Common to all methods
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `reads` | 1 | Independent runs; best over all reads is returned |
+| `sweeps_per_beta` | 20 | Metropolis sweeps per temperature step |
+| `schedule` | auto | Schedule object; auto-selected per method if None |
+| `seed` | None | RNG seed for reproducibility |
+| `progress` | True | Show tqdm progress bar |
+| `backend` | `"cpu"` | Compute backend |
+| `return_bits` | False | Return {0,1} bits instead of {−1,+1} spins |
+
+### SQA and SQAPT (`method="sqa"` or `"sqapt"`)
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `trotter_slices` | 32 | Number of imaginary-time slices. More slices → less Trotter error, more memory/time |
+| `replicas` | 1 | Parallel SQA chains (SQA) or PT ladder rungs (SQAPT) |
+| `worldline_sweeps` | 5 | Flips one spin through all time-slices at once (improves mixing) |
+| `cluster_sweeps` | 0 | Swendsen–Wang cluster updates along imaginary time |
+| `continuous_time_slices` | 0 | If > 0, approximates continuous-time limit within SQA |
+
+### SQAPT only (`method="sqapt"`)
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `pt_steps` | 50 | Number of local-update + swap epochs |
+| `swap_interval` | 1 | Attempt replica swap every N steps |
+| `pt_betas` | None | Explicit β ladder (overrides schedule) |
+| `pt_gammas` | None | Explicit Γ ladder (must pair with pt_betas) |
+
+### CT-PIMC only (`method="ctpimc"`)
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `ctpimc_qubits_per_update` | 1 | Spins updated per cluster proposal |
+| `ctpimc_qubits_per_chain` | 1 | Chain length for multi-qubit proposals |
+
+---
+
+## Accessing Results
+
+```python
+result = solve(problem, method="sqapt", reads=32, ...)
+
+result.best_sample    # np.ndarray, shape (n,), dtype int — best spin/bit configuration
+result.best_energy    # float — lowest energy found across all reads
+result.samples        # list of n arrays — one per read
+result.energies       # list of floats — one per read
+result.trace          # list of floats — energy trace from the first read
+result.var_order      # variable ordering (relevant for BQM/graph inputs)
+
+# Convert spins to bits manually
+bits = ((result.best_sample + 1) // 2).astype(int)
+```
+
+### Observers (low-level diagnostics)
+
+```python
+from qanneal import Annealer, MetricsObserver, AnnealSchedule
+import numpy as np
+
+ising = ...
+schedule = AnnealSchedule.linear(0.1, 5.0, 60)
+obs = MetricsObserver()
+ann = Annealer(ising, schedule)
+res = ann.run(sweeps_per_beta=40, observer=obs)
+
+import matplotlib.pyplot as plt
+plt.plot(obs.energy_trace)
+plt.xlabel("Temperature step"); plt.ylabel("Energy"); plt.show()
+```
+
+SQA observers (`SQAMetricsObserver`, `SQAStateTraceObserver`) capture per-sweep replica/slice
+state snapshots — see `docs/sqa_trace_parameters.md` for the full field list.
+
+---
+
+## Parallelism
+
+### OpenMP (automatic, within a run)
+
+Enabled by default (`QANNEAL_ENABLE_OPENMP=ON`). Parallelizes:
+- `ReplicaAnnealer` — across replicas
+- `SQAAnnealer` — across replicas × slices (when no sweep-level observer is attached)
+- `SQAParallelTemperingAnnealer` — across ladder replicas
+
+Control at runtime:
 ```bash
-python examples/python/sa_multi.py
-python examples/python/sqa_basic.py
-python examples/python/metrics_plot.py
-python examples/python/parallel_tempering.py
-python examples/python/sqa_trace_full.py
+export OMP_NUM_THREADS=8
+```
+
+### Multi-process / multi-node
+
+For large problems or many reads, use the HPC launcher:
+
+```bash
+# Single node, multiprocessing (no extra deps)
+python examples/python/hpc_sqa_launcher.py \
+  --n 5000 --method sqapt --reads 64 --workers 8
+
+# Multi-node MPI (requires mpi4py)
+mpirun -n 32 python examples/python/hpc_sqa_launcher.py \
+  --n 50000 --method sqa --reads 8 --mpi
+
+# SLURM job array (most portable, no mpi4py needed)
+sbatch scripts/slurm/run_sqa_array.sh
+python examples/python/merge_array_results.py results/run_*.json
+```
+
+### C++ MPI (build-time)
+
+```bash
+cmake -S . -B build -DQANNEAL_ENABLE_MPI=ON
+cmake --build build
+mpirun -n 8 build/qanneal_mpi_example
+```
+
+---
+
+## Notebooks
+
+Interactive Jupyter notebooks in `notebooks/`:
+
+| Notebook | What you'll learn |
+|----------|------------------|
+| `01_quickstart.ipynb` | First problem, SA vs SQA comparison |
+| `02_sqa_physics.ipynb` | Trotter slices, Γ schedules, worldline sweeps |
+| `03_sqapt_and_ctpimc.ipynb` | Replica exchange, (β,Γ) ladders, CT-PIMC |
+| `04_large_problems.ipynb` | SparseIsing, Chimera/MaxCut, HPC scaling |
+
+---
+
+## Examples
+
+```bash
+# Tuned SQAPT demo
+python examples/python/tuned_sqapt_demo.py --mode balanced
+
+# Number partition benchmark (SA / SQA / SQAPT / CT-PIMC vs D-Wave SDK)
+python examples/python/number_partition_benchmark.py \
+  --with-sqapt --with-ctpimc --schedule-mode balanced --jobs 8
+
+# Full comparative benchmark vs D-Wave
+python examples/python/dwave_comparative_benchmark.py --n 40 --reads 16
+
+# HPC scaling benchmark
+python examples/python/hpc_sqa_launcher.py --scaling --method sqapt --mode fast
+
+# Interactive graph problem editor
 python examples/python/graph_editor_gui.py
 ```
 
 ---
 
-**Build (C++ core)**
+## Documentation
+
+| File | Content |
+|------|---------|
+| `docs/api.md` | Complete API reference (all classes, parameters, return types) |
+| `docs/overview.md` | Architecture, data flow, component map |
+| `docs/user_guide.md` | Step-by-step usage guide with physical intuition |
+| `docs/ctpimc.md` | CT-PIMC algorithm details |
+| `docs/sqa_trace_parameters.md` | SQA observer field guide |
+
+---
+
+## Build Options
+
 ```bash
-cmake -S . -B build
-cmake --build build
+cmake -S . -B build \
+  -DQANNEAL_ENABLE_OPENMP=ON   \  # parallel loops (default ON)
+  -DQANNEAL_ENABLE_MPI=OFF     \  # distributed anneal (default OFF)
+  -DQANNEAL_BUILD_TESTS=ON     \  # unit tests
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ctest --test-dir build
 ```
 
-**CMake presets**
-```bash
-cmake --preset cpu-only
-cmake --build --preset cpu-only
-ctest --preset cpu-only
-```
-
-**MPI build**
-```bash
-cmake -S . -B build -DQANNEAL_ENABLE_MPI=ON
-cmake --build build
-mpirun -n 4 build/qanneal_mpi_example
-```
-
-**SLURM scripts**
-- `scripts/slurm/run_sa_mpi_srun.sh`
-- `scripts/slurm/run_sa_mpi_mpirun.sh`
-
 ---
 
-**Docs**
-- `docs/overview.md`
-- `docs/api.md`
-- `docs/sqa_trace_parameters.md`
-- `docs/latex/qanneal_technical_report.tex`
+## License
 
----
-
-**Release (PyPI wheels)**
-1. Update version in `pyproject.toml`.
-2. Tag and push:
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-3. GitHub Actions builds wheels and publishes to PyPI.
-
----
-
-**License**
-Apache-2.0 (see `LICENSE`). Portions derived from `sqaod` with attribution in `NOTICE`.
+Apache-2.0. See `LICENSE` and `NOTICE`.
+The CT-PIMC engine uses D-Wave's localPIMC (Apache-2.0), credited in `NOTICE`.

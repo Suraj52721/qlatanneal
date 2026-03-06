@@ -1,0 +1,6 @@
+qanneal_tests 1 0.412929
+qanneal_sqa_tests 1 0.394272
+qanneal_replica_tests 1 0.350989
+qanneal_pt_tests 1 0.341853
+qanneal_sqapt_tests 1 0.356604
+---

@@ -5,3 +5,9 @@ https://github.com/shinmorino/sqaod
 
 Copyright 2018 Shinya Morino
 Licensed under the Apache License, Version 2.0
+
+This product includes code derived from the dwave-pimc project
+https://github.com/dwavesystems/dwave-pimc
+
+Copyright 2020 D-Wave Systems Inc.
+Licensed under the Apache License, Version 2.0

@@ -5,10 +5,15 @@
 **What it demonstrates**
 - Multiple beta ladder
 - Swap acceptance tracking
+- Classical PT API (`ParallelTemperingAnnealer`)
+
+For quantum PT, see:
+- `examples/python/tuned_sqapt_demo.py`
+- `solve(..., method=\"sqapt\")`
 
 **Run**
 ```bash
-python qanneal/examples/python/parallel_tempering.py
+python examples/python/parallel_tempering.py
 ```
 
 **Expected output (example)**

@@ -70,4 +70,35 @@ double SparseIsing::delta_energy(const int8_t *spins, std::size_t n, std::size_t
     return -2.0 * s * local;
 }
 
+void SparseIsing::compute_local_fields(const int8_t *spins, std::size_t n,
+                                        double *fields) const {
+    if (n != n_) {
+        throw std::invalid_argument("State size mismatch.");
+    }
+    for (std::size_t i = 0; i < n_; ++i) {
+        fields[i] = h_[i];
+    }
+    for (const auto &edge : edges_) {
+        fields[edge.i] += edge.value * static_cast<double>(spins[edge.j]);
+        fields[edge.j] += edge.value * static_cast<double>(spins[edge.i]);
+    }
+}
+
+// After flipping spin `flip` from old_spin to -old_spin:
+// For each neighbor j of flip: fields[j] += J[flip,j] * (-2 * old_spin)
+// O(degree) update — the key advantage for sparse problems.
+void SparseIsing::update_local_fields_after_flip(double *fields,
+                                                  const int8_t * /*new_spins*/,
+                                                  std::size_t n,
+                                                  std::size_t flip,
+                                                  int8_t old_spin) const {
+    if (n != n_) {
+        throw std::invalid_argument("State size mismatch.");
+    }
+    const double ds = -2.0 * static_cast<double>(old_spin);
+    for (const auto &nb : adj_[flip]) {
+        fields[nb.idx] += nb.value * ds;
+    }
+}
+
 }

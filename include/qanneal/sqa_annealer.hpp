@@ -35,6 +35,8 @@ public:
 
     SQAResult run(std::size_t sweeps_per_beta,
                   std::size_t worldline_sweeps,
+                  std::size_t cluster_sweeps = 0,
+                  std::size_t continuous_time_slices = 0,
                   SQAObserver *observer = nullptr);
 
 private:
@@ -44,12 +46,13 @@ private:
     std::size_t replicas_ = 0;
     std::mt19937_64 rng_;
 
-    double trotter_coupling(double beta, double gamma) const;
+    double trotter_coupling(double beta, double gamma, std::size_t slices) const;
     double delta_trotter(const SQAState &state,
                          std::size_t replica,
                          std::size_t slice,
                          std::size_t spin,
-                         double j_perp) const;
+                         double j_perp,
+                         std::size_t slices) const;
 };
 
 }

@@ -8,7 +8,7 @@
 
 **Run**
 ```bash
-python qanneal/examples/python/sqa_basic.py
+python examples/python/sqa_basic.py
 ```
 
 **Expected output (example)**

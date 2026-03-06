@@ -6,6 +6,7 @@
 
 #include "qanneal/annealer.hpp"
 #include "qanneal/backend.hpp"
+#include "qanneal/ctpimc_annealer.hpp"
 #include "qanneal/dense_ising.hpp"
 #include "qanneal/hamiltonian.hpp"
 #include "qanneal/metrics.hpp"
@@ -16,6 +17,7 @@
 #include "qanneal/schedule.hpp"
 #include "qanneal/sparse_ising.hpp"
 #include "qanneal/sqa_annealer.hpp"
+#include "qanneal/sqa_parallel_tempering.hpp"
 #include "qanneal/sqa_observer.hpp"
 #include "qanneal/sqa_schedule.hpp"
 #include "qanneal/sqa_state.hpp"
@@ -264,7 +266,8 @@ PYBIND11_MODULE(_qanneal, m) {
                        std::size_t sweeps_per_beta,
                        std::shared_ptr<qanneal::Observer> obs) {
             return self.run(sweeps_per_beta, obs.get());
-        }, py::arg("sweeps_per_beta"), py::arg("observer") = nullptr);
+        }, py::arg("sweeps_per_beta"), py::arg("observer") = nullptr,
+        py::call_guard<py::gil_scoped_release>());
 
     py::class_<qanneal::ReplicaResult>(m, "ReplicaResult")
         .def_readonly("best_state", &qanneal::ReplicaResult::best_state)
@@ -294,7 +297,8 @@ PYBIND11_MODULE(_qanneal, m) {
         py::arg("backend") = "cpu",
         py::keep_alive<1, 2>())
         .def("set_seed", &qanneal::ReplicaAnnealer::set_seed)
-        .def("run", &qanneal::ReplicaAnnealer::run, py::arg("sweeps_per_beta"));
+        .def("run", &qanneal::ReplicaAnnealer::run, py::arg("sweeps_per_beta"),
+             py::call_guard<py::gil_scoped_release>());
 
     py::class_<qanneal::ParallelTemperingResult>(m, "ParallelTemperingResult")
         .def_readonly("final_states", &qanneal::ParallelTemperingResult::final_states)
@@ -320,7 +324,42 @@ PYBIND11_MODULE(_qanneal, m) {
         .def("run", &qanneal::ParallelTemperingAnnealer::run,
              py::arg("sweeps_per_step"),
              py::arg("steps"),
-             py::arg("swap_interval") = 1);
+             py::arg("swap_interval") = 1,
+             py::call_guard<py::gil_scoped_release>());
+
+    py::class_<qanneal::SQAParallelTemperingResult>(m, "SQAParallelTemperingResult")
+        .def_readonly("final_states", &qanneal::SQAParallelTemperingResult::final_states)
+        .def_readonly("final_energies", &qanneal::SQAParallelTemperingResult::final_energies)
+        .def_readonly("best_state", &qanneal::SQAParallelTemperingResult::best_state)
+        .def_readonly("best_energy", &qanneal::SQAParallelTemperingResult::best_energy)
+        .def_readonly("average_energy_trace", &qanneal::SQAParallelTemperingResult::average_energy_trace)
+        .def_readonly("swap_acceptance_trace", &qanneal::SQAParallelTemperingResult::swap_acceptance_trace);
+
+    py::class_<qanneal::SQAParallelTemperingAnnealer>(m, "SQAParallelTemperingAnnealer")
+        .def(py::init([](std::shared_ptr<qanneal::Hamiltonian> ham,
+                         const std::vector<double> &betas,
+                         const std::vector<double> &gammas,
+                         std::size_t trotter_slices,
+                         const std::string &backend) {
+            auto kind = qanneal::backend_from_string(backend);
+            auto be = qanneal::make_backend(kind, std::move(ham));
+            return qanneal::SQAParallelTemperingAnnealer(std::move(be), betas, gammas, trotter_slices);
+        }),
+        py::arg("hamiltonian"),
+        py::arg("betas"),
+        py::arg("gammas"),
+        py::arg("trotter_slices"),
+        py::arg("backend") = "cpu",
+        py::keep_alive<1, 2>())
+        .def("set_seed", &qanneal::SQAParallelTemperingAnnealer::set_seed)
+        .def("run", &qanneal::SQAParallelTemperingAnnealer::run,
+             py::arg("sweeps_per_step"),
+             py::arg("worldline_sweeps"),
+             py::arg("steps"),
+             py::arg("swap_interval") = 1,
+             py::arg("cluster_sweeps") = 0,
+             py::arg("continuous_time_slices") = 0,
+             py::call_guard<py::gil_scoped_release>());
 
     py::class_<qanneal::SQASchedule>(m, "SQASchedule")
         .def(py::init<>())
@@ -332,7 +371,8 @@ PYBIND11_MODULE(_qanneal, m) {
     py::class_<qanneal::SQAObserver, std::shared_ptr<qanneal::SQAObserver>>(m, "SQAObserver");
     py::enum_<qanneal::SQASweepPhase>(m, "SQASweepPhase")
         .value("SLICE", qanneal::SQASweepPhase::Slice)
-        .value("WORLDLINE", qanneal::SQASweepPhase::Worldline);
+        .value("WORLDLINE", qanneal::SQASweepPhase::Worldline)
+        .value("CLUSTER", qanneal::SQASweepPhase::Cluster);
     py::class_<qanneal::SQAMetricsObserver, qanneal::SQAObserver, std::shared_ptr<qanneal::SQAMetricsObserver>>(m, "SQAMetricsObserver")
         .def(py::init<>())
         .def_readonly("energy_trace", &qanneal::SQAMetricsObserver::energy_trace)
@@ -380,9 +420,48 @@ PYBIND11_MODULE(_qanneal, m) {
         .def("run", [](qanneal::SQAAnnealer &self,
                        std::size_t sweeps_per_beta,
                        std::size_t worldline_sweeps,
+                       std::size_t cluster_sweeps,
+                       std::size_t continuous_time_slices,
                        std::shared_ptr<qanneal::SQAObserver> obs) {
-            return self.run(sweeps_per_beta, worldline_sweeps, obs.get());
-        }, py::arg("sweeps_per_beta"), py::arg("worldline_sweeps"), py::arg("observer") = nullptr);
+            return self.run(sweeps_per_beta, worldline_sweeps, cluster_sweeps, continuous_time_slices, obs.get());
+        }, py::arg("sweeps_per_beta"),
+           py::arg("worldline_sweeps"),
+           py::arg("cluster_sweeps") = 0,
+           py::arg("continuous_time_slices") = 0,
+           py::arg("observer") = nullptr,
+        py::call_guard<py::gil_scoped_release>());
+
+    py::class_<qanneal::CTPIMCResult>(m, "CTPIMCResult")
+        .def_readonly("best_state", &qanneal::CTPIMCResult::best_state)
+        .def_readonly("best_energy", &qanneal::CTPIMCResult::best_energy)
+        .def_readonly("energy_trace", &qanneal::CTPIMCResult::energy_trace);
+
+    py::class_<qanneal::CTPIMCAnnealer>(m, "CTPIMCAnnealer")
+        .def(py::init<const qanneal::DenseIsing &, qanneal::SQASchedule, std::size_t, std::size_t>(),
+             py::arg("ising"),
+             py::arg("schedule"),
+             py::arg("qubits_per_update") = 1,
+             py::arg("qubits_per_chain") = 1,
+             py::keep_alive<1, 2>())  // keep ising alive as long as the annealer is
+        .def(py::init<const qanneal::SparseIsing &, qanneal::SQASchedule, std::size_t, std::size_t>(),
+             py::arg("ising"),
+             py::arg("schedule"),
+             py::arg("qubits_per_update") = 1,
+             py::arg("qubits_per_chain") = 1,
+             py::keep_alive<1, 2>())  // keep ising alive as long as the annealer is
+        .def(py::init<int, double, double, int, std::size_t, std::size_t>(),
+             py::arg("Lperiodic"),
+             py::arg("inv_temp_over_J"),
+             py::arg("gamma_over_J"),
+             py::arg("initial_condition") = 0,
+             py::arg("qubits_per_update") = 1,
+             py::arg("qubits_per_chain") = 1)
+        .def("set_seed", &qanneal::CTPIMCAnnealer::set_seed)
+        .def("set_initial_state", &qanneal::CTPIMCAnnealer::set_initial_state)
+        .def("run", &qanneal::CTPIMCAnnealer::run,
+             py::arg("sweeps_per_beta"),
+             py::arg("reads") = 1,
+             py::call_guard<py::gil_scoped_release>());
 
     m.def("magnetization", [](const py::sequence &spins) {
         auto data = seq_to_spins(spins);

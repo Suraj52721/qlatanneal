@@ -43,6 +43,13 @@ public:
     virtual std::size_t size() const = 0;
     virtual double energy(const int8_t *spins, std::size_t n) const = 0;
     virtual double delta_energy(const int8_t *spins, std::size_t n, std::size_t flip) const = 0;
+    virtual void compute_local_fields(const int8_t *spins, std::size_t n,
+                                      double *fields) const = 0;
+    virtual void update_local_fields_after_flip(double *fields,
+                                                const int8_t *new_spins,
+                                                std::size_t n,
+                                                std::size_t flip,
+                                                int8_t old_spin) const = 0;
 };
 
 class CPUBackend final : public Backend {
@@ -63,6 +70,19 @@ public:
 
     double delta_energy(const int8_t *spins, std::size_t n, std::size_t flip) const override {
         return ham_->delta_energy(spins, n, flip);
+    }
+
+    void compute_local_fields(const int8_t *spins, std::size_t n,
+                               double *fields) const override {
+        ham_->compute_local_fields(spins, n, fields);
+    }
+
+    void update_local_fields_after_flip(double *fields,
+                                        const int8_t *new_spins,
+                                        std::size_t n,
+                                        std::size_t flip,
+                                        int8_t old_spin) const override {
+        ham_->update_local_fields_after_flip(fields, new_spins, n, flip, old_spin);
     }
 
 private:

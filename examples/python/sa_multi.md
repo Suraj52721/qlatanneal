@@ -8,7 +8,7 @@
 
 **Run**
 ```bash
-python qanneal/examples/python/sa_multi.py
+python examples/python/sa_multi.py
 ```
 
 **Expected output (example)**

@@ -58,6 +58,10 @@ MultiAnnealResult ReplicaAnnealer::run(std::size_t sweeps_per_beta) {
         states.push_back(State::random(n, rng_));
         energies[r] = backend_->energy(states[r].spins.data(), states[r].size());
     }
+    std::vector<std::mt19937_64> replica_rng(replicas_);
+    for (std::size_t r = 0; r < replicas_; ++r) {
+        replica_rng[r].seed(rng_());
+    }
 
     MultiAnnealResult result;
     result.replicas.resize(replicas_);
@@ -76,32 +80,46 @@ MultiAnnealResult ReplicaAnnealer::run(std::size_t sweeps_per_beta) {
         }
     }
 
-    std::uniform_real_distribution<double> uniform(0.0, 1.0);
-
     for (std::size_t step = 0; step < schedule_.betas.size(); ++step) {
         const double beta = schedule_.betas[step];
 
-        for (std::size_t r = 0; r < replicas_; ++r) {
+        auto update_replica = [&](std::size_t r) {
             auto &state = states[r];
             double energy = energies[r];
+            auto &rr = replica_rng[r];
+            std::uniform_real_distribution<double> uniform(0.0, 1.0);
             for (std::size_t sweep = 0; sweep < sweeps_per_beta; ++sweep) {
                 for (std::size_t i = 0; i < n; ++i) {
                     const double delta = backend_->delta_energy(state.spins.data(), state.size(), i);
-                    if (delta <= 0.0 || uniform(rng_) < std::exp(-beta * delta)) {
+                    if (delta <= 0.0 || uniform(rr) < std::exp(-beta * delta)) {
                         state[i] = static_cast<int8_t>(-state[i]);
                         energy += delta;
                         if (energy < result.replicas[r].best_energy) {
                             result.replicas[r].best_energy = energy;
                             result.replicas[r].best_state = state;
                         }
-                        if (energy < result.global_best_energy) {
-                            result.global_best_energy = energy;
-                            result.global_best_state = state;
-                        }
                     }
                 }
             }
             energies[r] = energy;
+        };
+
+#ifdef _OPENMP
+#pragma omp parallel for if(replicas_ > 1) schedule(static)
+        for (long long rr = 0; rr < static_cast<long long>(replicas_); ++rr) {
+            update_replica(static_cast<std::size_t>(rr));
+        }
+#else
+        for (std::size_t r = 0; r < replicas_; ++r) {
+            update_replica(r);
+        }
+#endif
+
+        for (std::size_t r = 0; r < replicas_; ++r) {
+            if (result.replicas[r].best_energy < result.global_best_energy) {
+                result.global_best_energy = result.replicas[r].best_energy;
+                result.global_best_state = result.replicas[r].best_state;
+            }
         }
 
         double avg_energy = 0.0;

@@ -1,0 +1,65 @@
+[
+  {
+    "n": 100,
+    "n_edges": 800,
+    "best_energy": -113.58312059975958,
+    "wall_time_s": 0.3394780419766903,
+    "reads": 4,
+    "method": "sqa",
+    "mode": "fast"
+  },
+  {
+    "n": 250,
+    "n_edges": 2000,
+    "best_energy": -269.4340476573027,
+    "wall_time_s": 1.1722909169038758,
+    "reads": 4,
+    "method": "sqa",
+    "mode": "fast"
+  },
+  {
+    "n": 500,
+    "n_edges": 4000,
+    "best_energy": -542.9446164072223,
+    "wall_time_s": 3.0770534579642117,
+    "reads": 4,
+    "method": "sqa",
+    "mode": "fast"
+  },
+  {
+    "n": 1000,
+    "n_edges": 8000,
+    "best_energy": -922.3564833539168,
+    "wall_time_s": 8.664362584007904,
+    "reads": 4,
+    "method": "sqa",
+    "mode": "fast"
+  },
+  {
+    "n": 2000,
+    "n_edges": 16000,
+    "best_energy": -1784.673650210349,
+    "wall_time_s": 24.627864583977498,
+    "reads": 4,
+    "method": "sqa",
+    "mode": "fast"
+  },
+  {
+    "n": 5000,
+    "n_edges": 40000,
+    "best_energy": -4082.278156128888,
+    "wall_time_s": 94.47165774996392,
+    "reads": 4,
+    "method": "sqa",
+    "mode": "fast"
+  },
+  {
+    "n": 10000,
+    "n_edges": 80000,
+    "best_energy": -8783.382900850194,
+    "wall_time_s": 267.19728362502065,
+    "reads": 4,
+    "method": "sqa",
+    "mode": "fast"
+  }
+]

@@ -20,12 +20,15 @@ endif()
 
 add_library(qanneal_core
     src/annealer.cpp
+    src/ctpimc_annealer.cpp
     src/dense_ising.cpp
     src/sparse_ising.cpp
     src/sqa_annealer.cpp
+    src/sqa_parallel_tempering.cpp
     src/replica_annealer.cpp
     src/parallel_tempering.cpp
     src/qubo.cpp
+    src/third_party/dwave_pimc/localPIMC.cpp
 )
 
 add_library(qanneal::core ALIAS qanneal_core)
@@ -41,6 +44,8 @@ target_include_directories(qanneal_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/dwave_pimc
 )
 
 if(QANNEAL_ENABLE_CUDA)
@@ -53,6 +58,25 @@ if(QANNEAL_ENABLE_OPENMP)
     find_package(OpenMP)
     if(OpenMP_CXX_FOUND)
         target_link_libraries(qanneal_core PUBLIC OpenMP::OpenMP_CXX)
+    endif()
+endif()
+
+# Enable native SIMD (AVX2 on x86, NEON/SVE on ARM/Apple-M).
+# Guarded to MSVC which uses /arch:AVX2 instead, and to compilers that
+# understand -march/-mcpu.
+if(NOT MSVC)
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-march=native" _QANNEAL_HAS_MARCH_NATIVE)
+    if(_QANNEAL_HAS_MARCH_NATIVE)
+        target_compile_options(qanneal_core PRIVATE -march=native)
+        message(STATUS "qanneal: -march=native enabled (SIMD auto-vectorization)")
+    else()
+        # Apple Clang on ARM may not recognise -march=native; try -mcpu=native
+        check_cxx_compiler_flag("-mcpu=native" _QANNEAL_HAS_MCPU_NATIVE)
+        if(_QANNEAL_HAS_MCPU_NATIVE)
+            target_compile_options(qanneal_core PRIVATE -mcpu=native)
+            message(STATUS "qanneal: -mcpu=native enabled (SIMD auto-vectorization)")
+        endif()
     endif()
 endif()
 
@@ -137,6 +161,10 @@ if(QANNEAL_BUILD_TESTS)
     add_executable(qanneal_pt_tests tests/test_parallel_tempering.cpp)
     target_link_libraries(qanneal_pt_tests PRIVATE qanneal_core)
     add_test(NAME qanneal_pt_tests COMMAND qanneal_pt_tests)
+
+    add_executable(qanneal_sqapt_tests tests/test_sqa_parallel_tempering.cpp)
+    target_link_libraries(qanneal_sqapt_tests PRIVATE qanneal_core)
+    add_test(NAME qanneal_sqapt_tests COMMAND qanneal_sqapt_tests)
 endif()
 
 install(TARGETS qanneal_core EXPORT qannealTargets

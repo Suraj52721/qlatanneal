@@ -19,7 +19,8 @@ public:
 
 enum class SQASweepPhase : int {
     Slice = 0,
-    Worldline = 1
+    Worldline = 1,
+    Cluster = 2
 };
 
 class SQASweepObserver {

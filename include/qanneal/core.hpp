@@ -2,6 +2,7 @@
 
 #include "qanneal/annealer.hpp"
 #include "qanneal/backend.hpp"
+#include "qanneal/ctpimc_annealer.hpp"
 #include "qanneal/dense_ising.hpp"
 #include "qanneal/hamiltonian.hpp"
 #include "qanneal/metrics.hpp"
@@ -12,6 +13,7 @@
 #include "qanneal/replica_annealer.hpp"
 #include "qanneal/schedule.hpp"
 #include "qanneal/sqa_annealer.hpp"
+#include "qanneal/sqa_parallel_tempering.hpp"
 #include "qanneal/sqa_observer.hpp"
 #include "qanneal/sqa_schedule.hpp"
 #include "qanneal/sqa_state.hpp"

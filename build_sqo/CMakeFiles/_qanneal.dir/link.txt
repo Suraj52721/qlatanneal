@@ -1,0 +1,1 @@
+/usr/bin/c++ -bundle -Wl,-headerpad_max_install_names -Xlinker -undefined -Xlinker dynamic_lookup -flto -o /Users/satyanveshi/Desktop/SQOAD/qlatanneal/python/qanneal/_qanneal.cpython-311-darwin.so CMakeFiles/_qanneal.dir/python/bindings.cpp.o  libqanneal_core.a
