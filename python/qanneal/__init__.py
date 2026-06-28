@@ -9,6 +9,8 @@ from .solver import (  # noqa: F401
     auto_schedule_sa_tuned,
     auto_schedule_sqa_tuned,
     auto_ladder_sqa_tuned,
+    j_perp_from_beta_gamma,
+    optimal_j_perp_params,
 )
 from .gui import launch_graph_editor  # noqa: F401
 
@@ -55,6 +57,8 @@ __all__ = [
     "auto_schedule_sa_tuned",
     "auto_schedule_sqa_tuned",
     "auto_ladder_sqa_tuned",
+    "j_perp_from_beta_gamma",
+    "optimal_j_perp_params",
     "launch_graph_editor",
 ]
 

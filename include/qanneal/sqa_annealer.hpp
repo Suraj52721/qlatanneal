@@ -18,6 +18,7 @@ struct SQAResult {
     State best_state;
     double best_energy = 0.0;
     std::vector<double> energy_trace;
+    std::vector<double> j_perp_trace;  // populated by run_optimal; empty for run()
 };
 
 class SQAAnnealer {
@@ -38,6 +39,20 @@ public:
                   std::size_t cluster_sweeps = 0,
                   std::size_t continuous_time_slices = 0,
                   SQAObserver *observer = nullptr);
+
+    // Adaptive optimal schedule (Roland-Cerf SQA analogue from the local adiabaticity derivation).
+    // j_perp increases from j_perp_start toward j_perp_end; beta is fixed throughout.
+    // Step size: delta_j = eps_tilde * chi_B^(-alpha), where chi_B = Var(B) across replicas.
+    // alpha = z/(2-eta) + 1/2; for 1-D quantum Ising universality class: alpha = 15/14.
+    SQAResult run_optimal(double beta,
+                          double j_perp_start,
+                          double j_perp_end,
+                          double eps_tilde,
+                          double alpha,
+                          std::size_t num_steps,
+                          std::size_t sweeps_per_step,
+                          std::size_t worldline_sweeps = 0,
+                          std::size_t cluster_sweeps = 0);
 
 private:
     std::shared_ptr<Backend> backend_;

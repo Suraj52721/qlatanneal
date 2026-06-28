@@ -474,4 +474,316 @@ SQAResult SQAAnnealer::run(std::size_t sweeps_per_beta,
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Compute the imaginary-time bond sum B(sigma) = sum_{k,i} s^k_i s^{k+1}_i
+// for a single replica inside an SQAState.
+// ---------------------------------------------------------------------------
+static double bond_sum_replica(const SQAState &state,
+                                std::size_t replica,
+                                std::size_t slices,
+                                std::size_t n) {
+    double sum = 0.0;
+    for (std::size_t t = 0; t < slices; ++t) {
+        const std::size_t tn = (t + 1) % slices;
+        const int8_t *a = state.slice_ptr(replica, t);
+        const int8_t *b = state.slice_ptr(replica, tn);
+        for (std::size_t i = 0; i < n; ++i) {
+            sum += static_cast<double>(a[i]) * static_cast<double>(b[i]);
+        }
+    }
+    return sum;
+}
+
+SQAResult SQAAnnealer::run_optimal(double beta,
+                                   double j_perp_start,
+                                   double j_perp_end,
+                                   double eps_tilde,
+                                   double alpha,
+                                   std::size_t num_steps,
+                                   std::size_t sweeps_per_step,
+                                   std::size_t worldline_sweeps,
+                                   std::size_t cluster_sweeps) {
+    if (num_steps == 0) {
+        throw std::invalid_argument("num_steps must be > 0.");
+    }
+    if (sweeps_per_step == 0 && worldline_sweeps == 0 && cluster_sweeps == 0) {
+        throw std::invalid_argument("At least one of sweeps_per_step, worldline_sweeps, or cluster_sweeps must be > 0.");
+    }
+    if (j_perp_end <= j_perp_start) {
+        throw std::invalid_argument("j_perp_end must be > j_perp_start.");
+    }
+    if (eps_tilde <= 0.0) {
+        throw std::invalid_argument("eps_tilde must be > 0.");
+    }
+
+    const std::size_t n = backend_->size();
+    const std::size_t slices = slices_;
+    const double beta_scale = beta / static_cast<double>(slices);
+    const double nM = static_cast<double>(n * slices);
+    const double min_chi_B = 1e-4 * nM;
+
+    SQAState state = SQAState::random(replicas_, slices, n, rng_);
+
+    SQAResult result;
+    result.best_energy = std::numeric_limits<double>::infinity();
+    result.energy_trace.reserve(num_steps);
+    result.j_perp_trace.reserve(num_steps);
+
+    std::vector<std::mt19937_64> replica_rng(replicas_);
+    for (std::size_t r = 0; r < replicas_; ++r) {
+        replica_rng[r].seed(rng_());
+    }
+
+    std::vector<double> local_fields(replicas_ * slices * n, 0.0);
+    for (std::size_t r = 0; r < replicas_; ++r) {
+        for (std::size_t t = 0; t < slices; ++t) {
+            backend_->compute_local_fields(
+                state.slice_ptr(r, t), n,
+                &local_fields[(r * slices + t) * n]);
+        }
+    }
+
+    std::vector<std::vector<char>> cluster_buf(replicas_, std::vector<char>(slices));
+    std::vector<std::vector<std::size_t>> stack_buf(replicas_);
+    for (auto &s : stack_buf) s.reserve(slices);
+
+    std::vector<std::vector<std::size_t>> spin_orders(replicas_);
+    for (std::size_t r = 0; r < replicas_; ++r) {
+        spin_orders[r].resize(n);
+        std::iota(spin_orders[r].begin(), spin_orders[r].end(), 0);
+    }
+
+    // Per-replica B sample buffers: one sample per (Metropolis + cluster) sweep per replica.
+    // These give replicas_ * (sweeps_per_step + cluster_sweeps) chi_B samples each step,
+    // replacing the old single-snapshot (and broken single-replica) estimators.
+    const std::size_t samples_per_replica = sweeps_per_step + cluster_sweeps;
+    std::vector<std::vector<double>> B_sweep_samples(replicas_);
+    for (auto &v : B_sweep_samples) {
+        v.reserve(samples_per_replica > 0 ? samples_per_replica : 1);
+    }
+
+    double j_perp = j_perp_start;
+
+    for (std::size_t step = 0; step < num_steps; ++step) {
+        const double join_prob = 1.0 - std::exp(-2.0 * j_perp);
+
+#ifdef _OPENMP
+#pragma omp parallel for if(replicas_ > 1) schedule(static)
+#endif
+        for (long long rr = 0; rr < static_cast<long long>(replicas_); ++rr) {
+            const std::size_t replica = static_cast<std::size_t>(rr);
+            auto &local_rng = replica_rng[replica];
+            std::uniform_real_distribution<double> uniform(0.0, 1.0);
+            std::uniform_int_distribution<std::size_t> slice_pick(0, slices - 1);
+
+            double *my_lf = local_fields.data() + replica * slices * n;
+            auto &my_spin_order = spin_orders[replica];
+            auto &my_cluster = cluster_buf[replica];
+            auto &my_stack = stack_buf[replica];
+
+            // Running B for this replica — exact incremental updates after each accepted flip.
+            double b_r = bond_sum_replica(state, replica, slices, n);
+            auto &samples = B_sweep_samples[replica];
+            samples.clear();
+
+            for (std::size_t sweep = 0; sweep < sweeps_per_step; ++sweep) {
+                std::shuffle(my_spin_order.begin(), my_spin_order.end(), local_rng);
+                for (std::size_t t = 0; t < slices; ++t) {
+                    int8_t *sptr = state.slice_ptr(replica, t);
+                    double *fields = my_lf + t * n;
+                    const std::size_t prev_t = (t == 0) ? (slices - 1) : (t - 1);
+                    const std::size_t next_t = (t + 1) % slices;
+                    const int8_t *prev_ptr = state.slice_ptr(replica, prev_t);
+                    const int8_t *next_ptr = state.slice_ptr(replica, next_t);
+
+                    for (std::size_t idx = 0; idx < n; ++idx) {
+                        const std::size_t spin = my_spin_order[idx];
+                        const int8_t s = sptr[spin];
+                        const int8_t s_prev = prev_ptr[spin];
+                        const int8_t s_next = next_ptr[spin];
+                        const int nn_sum = static_cast<int>(s_prev) + static_cast<int>(s_next);
+                        const double de_classical = -2.0 * static_cast<double>(s) * fields[spin];
+                        const double de_trotter =
+                            2.0 * j_perp * static_cast<double>(s) * static_cast<double>(nn_sum);
+                        const double de = beta_scale * de_classical + de_trotter;
+                        if (de <= 0.0 || uniform(local_rng) < std::exp(-de)) {
+                            sptr[spin] = static_cast<int8_t>(-s);
+                            backend_->update_local_fields_after_flip(fields, sptr, n, spin, s);
+                            // delta_B = -2*s*(s_prev + s_next): exact, no division by j_perp.
+                            b_r += -2.0 * static_cast<double>(s) * static_cast<double>(nn_sum);
+                        }
+                    }
+                }
+                // One B sample per full Metropolis sweep.
+                samples.push_back(b_r);
+            }
+
+            for (std::size_t sweep = 0; sweep < cluster_sweeps; ++sweep) {
+                std::shuffle(my_spin_order.begin(), my_spin_order.end(), local_rng);
+                for (std::size_t idx = 0; idx < n; ++idx) {
+                    const std::size_t spin = my_spin_order[idx];
+                    const std::size_t seed = slice_pick(local_rng);
+
+                    std::fill(my_cluster.begin(), my_cluster.end(), 0);
+                    my_stack.clear();
+                    my_stack.push_back(seed);
+                    my_cluster[seed] = 1;
+                    const int8_t seed_spin = state.slice_ptr(replica, seed)[spin];
+
+                    while (!my_stack.empty()) {
+                        const std::size_t t = my_stack.back();
+                        my_stack.pop_back();
+                        const std::size_t prev = (t == 0) ? (slices - 1) : (t - 1);
+                        const std::size_t next = (t + 1) % slices;
+                        if (!my_cluster[prev] &&
+                            state.slice_ptr(replica, prev)[spin] == seed_spin &&
+                            uniform(local_rng) < join_prob) {
+                            my_cluster[prev] = 1;
+                            my_stack.push_back(prev);
+                        }
+                        if (!my_cluster[next] &&
+                            state.slice_ptr(replica, next)[spin] == seed_spin &&
+                            uniform(local_rng) < join_prob) {
+                            my_cluster[next] = 1;
+                            my_stack.push_back(next);
+                        }
+                    }
+
+                    double delta_classical = 0.0;
+                    double delta_time = 0.0;
+                    double delta_B = 0.0;
+                    for (std::size_t t = 0; t < slices; ++t) {
+                        if (!my_cluster[t]) continue;
+                        delta_classical += -2.0 * static_cast<double>(seed_spin) *
+                                           (my_lf + t * n)[spin];
+                        const std::size_t prev = (t == 0) ? (slices - 1) : (t - 1);
+                        const std::size_t next = (t + 1) % slices;
+                        if (!my_cluster[prev]) {
+                            const double bond =
+                                static_cast<double>(seed_spin) *
+                                static_cast<double>(state.slice_ptr(replica, prev)[spin]);
+                            delta_time += 2.0 * j_perp * bond;
+                            delta_B    += -2.0 * bond;
+                        }
+                        if (!my_cluster[next]) {
+                            const double bond =
+                                static_cast<double>(seed_spin) *
+                                static_cast<double>(state.slice_ptr(replica, next)[spin]);
+                            delta_time += 2.0 * j_perp * bond;
+                            delta_B    += -2.0 * bond;
+                        }
+                    }
+
+                    const double delta = beta_scale * delta_classical + delta_time;
+                    if (delta <= 0.0 || uniform(local_rng) < std::exp(-delta)) {
+                        for (std::size_t t = 0; t < slices; ++t) {
+                            if (!my_cluster[t]) continue;
+                            int8_t *sptr = state.slice_ptr(replica, t);
+                            sptr[spin] = static_cast<int8_t>(-seed_spin);
+                            backend_->update_local_fields_after_flip(
+                                my_lf + t * n, sptr, n, spin, seed_spin);
+                        }
+                        b_r += delta_B;
+                    }
+                }
+                // One B sample per full cluster sweep.
+                samples.push_back(b_r);
+            }
+
+            for (std::size_t sweep = 0; sweep < worldline_sweeps; ++sweep) {
+                std::shuffle(my_spin_order.begin(), my_spin_order.end(), local_rng);
+                for (std::size_t idx = 0; idx < n; ++idx) {
+                    const std::size_t spin = my_spin_order[idx];
+                    double de_classical = 0.0;
+                    for (std::size_t t = 0; t < slices; ++t) {
+                        const int8_t s_t = state.slice_ptr(replica, t)[spin];
+                        de_classical += -2.0 * static_cast<double>(s_t) *
+                                        (my_lf + t * n)[spin];
+                    }
+                    const double de = beta_scale * de_classical;
+                    if (de <= 0.0 || uniform(local_rng) < std::exp(-de)) {
+                        for (std::size_t t = 0; t < slices; ++t) {
+                            int8_t *sptr = state.slice_ptr(replica, t);
+                            const int8_t old = sptr[spin];
+                            sptr[spin] = static_cast<int8_t>(-old);
+                            backend_->update_local_fields_after_flip(
+                                my_lf + t * n, sptr, n, spin, old);
+                        }
+                        // Worldline flips preserve all imaginary-time bonds: ΔB = 0.
+                    }
+                }
+                // No B sample: worldline sweeps cannot change B.
+            }
+        }
+
+        // --- Compute chi_B = Var(B) from within-step samples across all replicas ---
+        // Total: replicas_ * (sweeps_per_step + cluster_sweeps) samples per step.
+        //
+        // For replicas >= 2: near criticality, within-replica samples are highly autocorrelated
+        // (τ_int >> sweeps_per_step), so the within-step variance collapses to the cross-replica
+        // variance — same quality as the old estimator.  Away from criticality, more effective
+        // samples improve the estimate.  Net result: always >= old estimator quality.
+        //
+        // For replicas == 1: the within-step variance also collapses near criticality (all S
+        // samples look the same), hitting the min_chi_B floor and causing a max-size step through
+        // the critical point.  Guard against this by taking the max with the per-bond approximation
+        // chi_B ≈ nM*(1 - (B/nM)²), which at least gives a finite non-zero value there.
+        double chi_B;
+        {
+            double B_sum = 0.0, B2_sum = 0.0;
+            std::size_t total_samples = 0;
+            for (std::size_t r = 0; r < replicas_; ++r) {
+                for (double b : B_sweep_samples[r]) {
+                    B_sum  += b;
+                    B2_sum += b * b;
+                    ++total_samples;
+                }
+            }
+            if (total_samples >= 2) {
+                const double B_mean  = B_sum  / static_cast<double>(total_samples);
+                const double B2_mean = B2_sum / static_cast<double>(total_samples);
+                chi_B = std::max(B2_mean - B_mean * B_mean, min_chi_B);
+            } else {
+                const double B = bond_sum_replica(state, 0, slices, n);
+                const double b_avg = B / nM;
+                chi_B = std::max(nM * (1.0 - b_avg * b_avg), min_chi_B);
+            }
+            // Single-replica guard: within-step variance underestimates near criticality.
+            // Take max with per-bond approximation to prevent floor-triggered max steps.
+            if (replicas_ == 1 && !B_sweep_samples[0].empty()) {
+                const double b_last = B_sweep_samples[0].back();
+                const double b_avg  = b_last / nM;
+                const double per_bond = std::max(nM * (1.0 - b_avg * b_avg), min_chi_B);
+                chi_B = std::max(chi_B, per_bond);
+            }
+        }
+
+        // --- Optimal schedule update: dJ_perp = eps_tilde * chi_B^(-alpha) ---
+        const double delta_j = eps_tilde * std::pow(chi_B, -alpha);
+        j_perp = std::min(j_perp + delta_j, j_perp_end);
+
+        // --- Track best energy and record traces ---
+        double avg_energy = 0.0;
+        const std::size_t total_states = replicas_ * slices;
+        for (std::size_t r = 0; r < replicas_; ++r) {
+            for (std::size_t t = 0; t < slices; ++t) {
+                const int8_t *sptr = state.slice_ptr(r, t);
+                const double e = backend_->energy(sptr, n);
+                avg_energy += e;
+                if (e < result.best_energy) {
+                    result.best_energy = e;
+                    result.best_state = state.slice_state(r, t);
+                }
+            }
+        }
+        avg_energy /= static_cast<double>(total_states);
+        result.energy_trace.push_back(avg_energy);
+        result.j_perp_trace.push_back(j_perp);
+
+        if (j_perp >= j_perp_end) break;
+    }
+
+    return result;
+}
+
 }

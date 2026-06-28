@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/run/media/suraj/Workspace/qlatanneal/build/cpu-only/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

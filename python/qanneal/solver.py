@@ -54,6 +54,41 @@ class SolveResult:
     return_bits: bool
 
 
+def j_perp_from_beta_gamma(beta: float, gamma: float, trotter_slices: int = 32) -> float:
+    """Convert (beta, gamma) to the Trotter coupling J_perp = 0.5*ln(1/tanh(beta*gamma/M))."""
+    import math
+    eps = 1e-12
+    x = max(beta * gamma / trotter_slices, eps)
+    return 0.5 * math.log(1.0 / math.tanh(x))
+
+
+def optimal_j_perp_params(problem: Any,
+                          mode: str = "balanced",
+                          trotter_slices: int = 32,
+                          probes: int = 256,
+                          seed: int = 1234,
+                          n: Optional[int] = None) -> Tuple[float, float, float]:
+    """
+    Return (beta, j_perp_start, j_perp_end) for the optimal adaptive schedule.
+
+    beta       — fixed inverse temperature to use during the run (set to beta_end of
+                 the equivalent standard schedule so we're always in the cold regime).
+    j_perp_start — J_perp corresponding to gamma_start at that beta (quantum end).
+    j_perp_end   — J_perp corresponding to gamma_end at that beta (classical end).
+    """
+    ising, _, _ = _normalize_problem(problem, n=n)
+    p_start, p_end, gamma_mult, gamma_final_ratio, _, sqa_step_base = _mode_params(mode)
+    scale = _estimate_delta_scale(ising, probes=probes, seed=seed)
+
+    beta_end = -np.log(p_end) / scale
+    gamma_start = max(gamma_mult * scale, 1e-3)
+    gamma_end = max(gamma_start * gamma_final_ratio, 1e-6)
+
+    j_perp_start = j_perp_from_beta_gamma(float(beta_end), float(gamma_start), trotter_slices)
+    j_perp_end   = j_perp_from_beta_gamma(float(beta_end), float(gamma_end),   trotter_slices)
+    return float(beta_end), float(j_perp_start), float(j_perp_end)
+
+
 def auto_schedule_sa(steps: int = 50,
                      beta_start: float = 0.1,
                      beta_end: float = 4.0) -> AnnealSchedule:
@@ -280,15 +315,33 @@ def solve(problem: Any,
           progress: bool = True,
           logger: Optional[logging.Logger] = None,
           n: Optional[int] = None,
-          return_bits: bool = False) -> SolveResult:
+          return_bits: bool = False,
+          schedule_type: str = "standard",
+          optimal_eps_tilde: float = 0.05,
+          optimal_alpha: float = 15.0 / 14.0,
+          optimal_num_steps: Optional[int] = None,
+          optimal_j_perp_start: Optional[float] = None,
+          optimal_j_perp_end: Optional[float] = None,
+          optimal_beta: Optional[float] = None) -> SolveResult:
     """
     Solve a problem using SA, SQA, SQA parallel tempering, or CT-PIMC.
 
     method: "sa", "sqa", "sqapt", or "ctpimc"
+    schedule_type: "standard" (default) or "optimal"
+        "optimal" uses the local adiabaticity ODE from the Roland-Cerf SQA derivation:
+        dJ_perp/dt = eps_tilde * chi_B^(-alpha), where chi_B = Var(B) across replicas.
+        Supported for methods "sqa" and "sqapt" (including SQAPT+SW via cluster_sweeps > 0).
+    optimal_eps_tilde: adiabaticity parameter epsilon-tilde (default 0.05).
+    optimal_alpha: exponent alpha = z/(2-eta)+1/2 (default 15/14, 1-D quantum Ising class).
+    optimal_num_steps: max adaptive steps (default: same as standard schedule length).
+    optimal_j_perp_start / optimal_j_perp_end / optimal_beta: auto-computed if None.
     """
     method = method.lower().strip()
+    schedule_type = schedule_type.lower().strip()
     if method not in ("sa", "sqa", "sqapt", "ctpimc"):
         raise ValueError("method must be 'sa', 'sqa', 'sqapt', or 'ctpimc'")
+    if schedule_type not in ("standard", "optimal"):
+        raise ValueError("schedule_type must be 'standard' or 'optimal'")
 
     if logger is None:
         logger = logging.getLogger("qanneal.solve")
@@ -350,6 +403,23 @@ def solve(problem: Any,
     else:
         annealer = Annealer(ising, schedule, backend=backend)
 
+    # --- Pre-compute optimal schedule parameters (done once, outside the reads loop) ---
+    _opt_beta: float = 0.0
+    _opt_j_perp_start: float = 0.0
+    _opt_j_perp_end: float = 0.0
+    _opt_num_steps: int = 100
+    if schedule_type == "optimal" and method in ("sqa", "sqapt"):
+        if method not in ("sqa", "sqapt"):
+            raise ValueError("schedule_type='optimal' is only supported for methods 'sqa' and 'sqapt'.")
+        _auto_beta, _auto_jps, _auto_jpe = optimal_j_perp_params(
+            ising, trotter_slices=trotter_slices)
+        _opt_beta = float(optimal_beta) if optimal_beta is not None else _auto_beta
+        _opt_j_perp_start = float(optimal_j_perp_start) if optimal_j_perp_start is not None else _auto_jps
+        _opt_j_perp_end = float(optimal_j_perp_end) if optimal_j_perp_end is not None else _auto_jpe
+        _opt_num_steps = int(optimal_num_steps) if optimal_num_steps is not None else max(
+            100, int(getattr(schedule, 'betas', [None] * 100).__len__()) if schedule is not None else 100
+        )
+
     samples: List[np.ndarray] = []
     energies: List[float] = []
     trace: Optional[List[float]] = None
@@ -358,7 +428,33 @@ def solve(problem: Any,
         if seed is not None:
             annealer.set_seed(seed + int(r))
 
-        if method == "sqa":
+        if schedule_type == "optimal" and method == "sqa":
+            res = annealer.run_optimal(
+                beta=_opt_beta,
+                j_perp_start=_opt_j_perp_start,
+                j_perp_end=_opt_j_perp_end,
+                eps_tilde=optimal_eps_tilde,
+                alpha=optimal_alpha,
+                num_steps=_opt_num_steps,
+                sweeps_per_step=sweeps_per_beta,
+                worldline_sweeps=worldline_sweeps,
+                cluster_sweeps=cluster_sweeps,
+            )
+            local_trace = list(getattr(res, "energy_trace", []))
+        elif schedule_type == "optimal" and method == "sqapt":
+            res = annealer.run_optimal(
+                num_steps=_opt_num_steps,
+                sweeps_per_step=sweeps_per_beta,
+                worldline_sweeps=worldline_sweeps,
+                eps_tilde=optimal_eps_tilde,
+                alpha=optimal_alpha,
+                j_perp_end=_opt_j_perp_end,
+                cluster_sweeps=cluster_sweeps,
+                swap_interval=swap_interval,
+                continuous_time_slices=continuous_time_slices,
+            )
+            local_trace = list(getattr(res, "average_energy_trace", []))
+        elif method == "sqa":
             try:
                 res = annealer.run(
                     sweeps_per_beta=sweeps_per_beta,

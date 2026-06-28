@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/qanneal_tests.dir/link.d CMakeFiles/qanneal_tests.dir/tests/test_dense_ising.cpp.o -o qanneal_tests  libqanneal_core.a /usr/lib/libgomp.so /usr/lib/libpthread.a

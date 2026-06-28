@@ -1,6 +1,8 @@
 # qanneal
 
-**Research-grade Ising/QUBO optimizer** with four annealing engines — from classical SA to the closest available CPU simulation of quantum annealing.
+**Research-grade Ising/QUBO optimizer** — version 0.4.0
+
+Four annealing engines from classical SA to the closest available CPU simulation of quantum annealing, plus a theoretically-grounded **optimal adaptive J⊥ schedule** derived from the local adiabaticity condition.
 
 | Method | Short name | What it simulates |
 |--------|-----------|-------------------|
@@ -137,6 +139,108 @@ E(s) = Σᵢ hᵢ sᵢ  +  Σᵢ<ⱼ Jᵢⱼ sᵢ sⱼ  +  c
 | `DenseIsing(h, J, c)` | O(n²) | n ≤ ~3 000, fully connected |
 | `SparseIsing(h, edges, n, c)` | O(n + \|E\|) | sparse graphs, n up to 100 000+ |
 | `QUBO(Q)` | O(n²) | binary variables; call `.to_ising()` |
+
+---
+
+## Optimal Adaptive Schedule *(new in 0.4.0)*
+
+The optimal schedule automatically paces the annealing based on real-time measurements
+of the bond susceptibility χ_B — the quantum fluctuation that diverges at the SQA critical
+point. This implements the **local adiabaticity condition** from Roland & Cerf (2002) for
+the Suzuki–Trotter path integral.
+
+### How it works
+
+```
+dJ_⊥ / dt  =  ε̃ · χ_B^{-α}
+```
+
+- `J_⊥(t)` — Trotter coupling (encodes quantum tunneling). Large J_⊥ = strong tunneling.
+- `χ_B = Var(B)` where `B = Σ_{k,i} s^k_i · s^{k+1}_i` (imaginary-time bond sum). Diverges at the SQA quantum critical point.
+- `ε̃` (`optimal_eps_tilde`) — overall speed. Smaller = more adiabatic = slower but better.
+- `α` (`optimal_alpha`) — universality class exponent. Default `15/14` for the 1-D quantum Ising class.
+
+The algorithm **automatically slows down near criticality** (large χ_B → small step) and speeds up away from it. No manual schedule design required.
+
+### Quickstart
+
+```python
+from qanneal import solve
+
+result = solve(
+    problem,
+    method="sqa",          # or "sqapt" for better performance
+    schedule_type="optimal",
+    reads=8,
+    replicas=4,
+    optimal_eps_tilde=0.05,   # smaller = more adiabatic
+    optimal_num_steps=200,    # max adaptive steps
+    # optional overrides — auto-computed from problem scale if omitted:
+    # optimal_beta=3.0,
+    # optimal_j_perp_start=0.05,
+    # optimal_j_perp_end=3.0,
+    # optimal_alpha=15/14,
+)
+print(result.best_energy)
+print(result.best_sample)
+```
+
+### SQAPT + optimal schedule (recommended)
+
+```python
+from qanneal import solve, auto_ladder_sqa_tuned
+
+result = solve(
+    problem,
+    method="sqapt",
+    schedule_type="optimal",
+    replicas=8,
+    reads=4,
+    trotter_slices=32,
+    worldline_sweeps=3,
+    cluster_sweeps=1,        # SQAPT+SW: Swendsen-Wang cluster updates
+    swap_interval=1,
+    optimal_eps_tilde=0.02,
+    optimal_num_steps=300,
+)
+```
+
+### J⊥ schedule helpers
+
+```python
+from qanneal import j_perp_from_beta_gamma, optimal_j_perp_params
+
+# Convert (beta, gamma) to the Trotter coupling J_perp
+jp = j_perp_from_beta_gamma(beta=3.0, gamma=0.5, trotter_slices=32)
+# → 0.5 * ln(1 / tanh(beta*gamma/M))
+
+# Auto-compute problem-adapted beta, j_perp_start, j_perp_end
+beta, jp_start, jp_end = optimal_j_perp_params(problem, trotter_slices=32)
+```
+
+### Direct C++ / low-level API
+
+```python
+from qanneal import SQAAnnealer, SQASchedule
+
+dummy = SQASchedule.from_vectors([3.0], [0.01])  # only used for construction
+ann = SQAAnnealer(ising, dummy, trotter_slices=32, replicas=4)
+result = ann.run_optimal(
+    beta=3.0,
+    j_perp_start=0.05,
+    j_perp_end=3.0,
+    eps_tilde=0.05,
+    alpha=15/14,
+    num_steps=200,
+    sweeps_per_step=20,
+    worldline_sweeps=3,
+    cluster_sweeps=1,
+)
+# result.j_perp_trace — list of J_perp values at each adaptive step
+# result.energy_trace — energy at each adaptive step
+# result.best_state   — State with best spin configuration
+# result.best_energy  — float
+```
 
 ---
 
@@ -349,6 +453,7 @@ python examples/python/graph_editor_gui.py
 | File | Content |
 |------|---------|
 | `docs/api.md` | Complete API reference (all classes, parameters, return types) |
+| `docs/optimal_schedule.md` | Optimal adaptive J⊥ schedule — physics, algorithm, and parameter guide |
 | `docs/overview.md` | Architecture, data flow, component map |
 | `docs/user_guide.md` | Step-by-step usage guide with physical intuition |
 | `docs/ctpimc.md` | CT-PIMC algorithm details |

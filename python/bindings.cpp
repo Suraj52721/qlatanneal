@@ -359,6 +359,17 @@ PYBIND11_MODULE(_qanneal, m) {
              py::arg("swap_interval") = 1,
              py::arg("cluster_sweeps") = 0,
              py::arg("continuous_time_slices") = 0,
+             py::call_guard<py::gil_scoped_release>())
+        .def("run_optimal", &qanneal::SQAParallelTemperingAnnealer::run_optimal,
+             py::arg("num_steps"),
+             py::arg("sweeps_per_step"),
+             py::arg("worldline_sweeps") = 0,
+             py::arg("eps_tilde") = 0.05,
+             py::arg("alpha") = 15.0 / 14.0,
+             py::arg("j_perp_end") = 0.0,
+             py::arg("cluster_sweeps") = 0,
+             py::arg("swap_interval") = 1,
+             py::arg("continuous_time_slices") = 0,
              py::call_guard<py::gil_scoped_release>());
 
     py::class_<qanneal::SQASchedule>(m, "SQASchedule")
@@ -398,7 +409,8 @@ PYBIND11_MODULE(_qanneal, m) {
     py::class_<qanneal::SQAResult>(m, "SQAResult")
         .def_readonly("best_state", &qanneal::SQAResult::best_state)
         .def_readonly("best_energy", &qanneal::SQAResult::best_energy)
-        .def_readonly("energy_trace", &qanneal::SQAResult::energy_trace);
+        .def_readonly("energy_trace", &qanneal::SQAResult::energy_trace)
+        .def_readonly("j_perp_trace", &qanneal::SQAResult::j_perp_trace);
 
     py::class_<qanneal::SQAAnnealer>(m, "SQAAnnealer")
         .def(py::init([](std::shared_ptr<qanneal::Hamiltonian> ham,
@@ -429,7 +441,18 @@ PYBIND11_MODULE(_qanneal, m) {
            py::arg("cluster_sweeps") = 0,
            py::arg("continuous_time_slices") = 0,
            py::arg("observer") = nullptr,
-        py::call_guard<py::gil_scoped_release>());
+        py::call_guard<py::gil_scoped_release>())
+        .def("run_optimal", &qanneal::SQAAnnealer::run_optimal,
+             py::arg("beta"),
+             py::arg("j_perp_start"),
+             py::arg("j_perp_end"),
+             py::arg("eps_tilde"),
+             py::arg("alpha") = 15.0 / 14.0,
+             py::arg("num_steps") = 100,
+             py::arg("sweeps_per_step") = 20,
+             py::arg("worldline_sweeps") = 0,
+             py::arg("cluster_sweeps") = 0,
+             py::call_guard<py::gil_scoped_release>());
 
     py::class_<qanneal::CTPIMCResult>(m, "CTPIMCResult")
         .def_readonly("best_state", &qanneal::CTPIMCResult::best_state)

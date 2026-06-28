@@ -41,6 +41,22 @@ public:
                                    std::size_t cluster_sweeps = 0,
                                    std::size_t continuous_time_slices = 0);
 
+    // Adaptive optimal schedule for SQAPT (and SQAPT+SW when cluster_sweeps > 0).
+    // All replicas share a single j_perp that evolves via the local adiabaticity ODE.
+    // Each replica keeps its own fixed beta; PT swaps reduce to a purely classical
+    // criterion (Trotter terms cancel when j_perp is shared).
+    // j_perp starts from trotter_coupling(betas_[0], gammas_[0], slices) and increases
+    // toward j_perp_end.  alpha = z/(2-eta) + 1/2; default = 15/14 (1-D quantum Ising).
+    SQAParallelTemperingResult run_optimal(std::size_t num_steps,
+                                          std::size_t sweeps_per_step,
+                                          std::size_t worldline_sweeps,
+                                          double eps_tilde,
+                                          double alpha = 15.0 / 14.0,
+                                          double j_perp_end = 0.0,
+                                          std::size_t cluster_sweeps = 0,
+                                          std::size_t swap_interval = 1,
+                                          std::size_t continuous_time_slices = 0);
+
 private:
     std::shared_ptr<Backend> backend_;
     std::vector<double> betas_;

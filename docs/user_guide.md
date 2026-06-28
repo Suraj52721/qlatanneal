@@ -322,16 +322,104 @@ cmake --build build
 mpirun -n 4 build/qanneal_mpi_example
 ```
 
-## 9. Recommended Workflow for New Problems
+## 9. Optimal Adaptive J⊥ Schedule *(new in 0.4.0)*
+
+### 9.1 When to use it
+
+The standard schedule has a fixed Γ(t) ramp — it does not adapt to the problem. The optimal schedule
+measures how close the system is to the quantum critical point at each step and **automatically slows
+down near criticality**. Use it when:
+
+- You care about solution quality more than wall-clock time.
+- The standard schedule finds good solutions sometimes but misses the global optimum.
+- You suspect the system is getting stuck near the quantum phase transition.
+
+### 9.2 One-call usage
+
+```python
+from qanneal import solve
+
+result = solve(
+    problem,
+    method="sqapt",
+    schedule_type="optimal",
+    replicas=8,
+    reads=4,
+    trotter_slices=32,
+    worldline_sweeps=3,
+    cluster_sweeps=1,
+    optimal_eps_tilde=0.02,  # adiabaticity — smaller = better but slower
+    optimal_num_steps=300,
+)
+print(result.best_energy)
+```
+
+All `optimal_*` parameters are optional and auto-computed from the problem's energy scale if omitted.
+
+### 9.3 Parameter guidance
+
+| Parameter | Effect | Starting point |
+|-----------|--------|---------------|
+| `optimal_eps_tilde` | Controls overall speed. Large → fast but non-adiabatic. Small → slow but adiabatic. | `0.05` (fast), `0.02` (balanced), `0.005` (accurate) |
+| `optimal_num_steps` | Max adaptive steps. If J⊥ reaches `j_perp_end` before this, the run stops early. | 100–500 depending on problem size |
+| `optimal_alpha` | Universality exponent. Rarely needs changing. | `15/14` (default, 1-D quantum Ising) |
+| `sweeps_per_beta` | Sweeps per adaptive step (passed as `sweeps_per_step`). More sweeps → better χ_B estimate per step. | 10–30 |
+| `replicas` | More replicas → better χ_B estimate near criticality for SQAPT. | 4–8 |
+
+### 9.4 Inspecting the J⊥ trace (low-level API)
+
+```python
+from qanneal import SQAAnnealer, SQASchedule, optimal_j_perp_params
+import matplotlib.pyplot as plt
+
+dummy = SQASchedule.from_vectors([3.0], [0.01])
+ann = SQAAnnealer(ising, dummy, trotter_slices=32, replicas=4)
+
+beta, jp_start, jp_end = optimal_j_perp_params(ising)
+result = ann.run_optimal(
+    beta=beta, j_perp_start=jp_start, j_perp_end=jp_end,
+    eps_tilde=0.05, num_steps=200, sweeps_per_step=20,
+    worldline_sweeps=3, cluster_sweeps=1,
+)
+
+steps = list(range(len(result.j_perp_trace)))
+fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
+ax1.plot(steps, result.j_perp_trace)
+ax1.set_ylabel("J⊥ (Trotter coupling)")
+ax1.set_title("Optimal adaptive schedule")
+
+ax2.plot(steps, result.energy_trace)
+ax2.set_ylabel("Energy")
+ax2.set_xlabel("Adaptive step")
+plt.tight_layout()
+plt.show()
+```
+
+A correctly calibrated run shows:
+- J⊥ increasing slowly near the middle of the schedule (critical point region, large χ_B)
+- J⊥ increasing faster at the beginning and end (away from criticality, small χ_B)
+- Energy decreasing monotonically as J⊥ increases toward `jp_end`
+
+### 9.5 Troubleshooting optimal schedule
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| J⊥ reaches end in very few steps | `eps_tilde` too large | Reduce `optimal_eps_tilde` by 5–10× |
+| J⊥ barely moves after many steps | `eps_tilde` too small | Increase `optimal_eps_tilde` by 5–10× |
+| Schedule is uniform (no slowdown near critical point) | Too few `replicas` or `sweeps_per_step` | Use `replicas≥4`, `sweeps_per_step≥10` |
+| Energy doesn't improve vs standard schedule | `optimal_num_steps` too small | Increase so the run actually finishes |
+
+## 10. Recommended Workflow for New Problems
 
 1. Encode and sanity-check small instances with brute force.
 2. Start with `method="sa"`, tuned `mode="fast"` for quick checks.
 3. Move to `method="sqa"`, mode `"balanced"`.
 4. Add `method="sqapt"` when landscapes are rugged or multimodal.
-5. Track `best_energy`, traces, and run-to-run variance across reads.
-6. Use `--fair` in benchmark scripts for time/quality comparisons.
+5. Try `schedule_type="optimal"` when you want the best quality for a given compute budget.
+6. Track `best_energy`, traces, and run-to-run variance across reads.
+7. Use `--fair` in benchmark scripts for time/quality comparisons.
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 - `ModuleNotFoundError: qanneal._qanneal`:
   - reinstall from the same repository root (`python -m pip install . --no-build-isolation`)
@@ -341,9 +429,10 @@ mpirun -n 4 build/qanneal_mpi_example
 - OpenMP not detected on macOS:
   - install libomp and rebuild (Homebrew: `brew install libomp`)
 
-## 11. Related docs
+## 12. Related docs
 
 - `docs/api.md`
+- `docs/optimal_schedule.md`
 - `docs/ctpimc.md`
 - `docs/sqa_trace_parameters.md`
 - `docs/number_partition_parallel.md`

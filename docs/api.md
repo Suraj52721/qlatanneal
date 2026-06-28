@@ -1,4 +1,4 @@
-# qanneal API Reference
+# qanneal API Reference — v0.4.0
 
 Complete reference for every public class, function, and parameter.
 
@@ -15,6 +15,17 @@ Complete reference for every public class, function, and parameter.
 7. [High-Level Solver](#high-level-solver)
 8. [Utility Functions](#utility-functions)
 9. [C++ API Summary](#c-api-summary)
+
+---
+
+## What's New in 0.4.0
+
+- `SQAAnnealer.run_optimal()` — locally-adiabatic J⊥ schedule for SQA and SQA+SW
+- `SQAParallelTemperingAnnealer.run_optimal()` — same for SQAPT and SQAPT+SW
+- `SQAResult.j_perp_trace` — record of J⊥ at each adaptive step
+- `solve(..., schedule_type="optimal")` — one-call access to the optimal schedule
+- `j_perp_from_beta_gamma()` — convert (β, Γ) to Trotter coupling
+- `optimal_j_perp_params()` — problem-adaptive (β, j_perp_start, j_perp_end) helper
 
 ---
 
@@ -296,6 +307,66 @@ Returns: `SQASchedule`
 
 ---
 
+### `j_perp_from_beta_gamma(beta, gamma, trotter_slices=32)` *(new in 0.4.0)*
+
+Convert a `(β, Γ)` pair to the corresponding Trotter coupling J⊥.
+
+**Formula**: `J_⊥ = 0.5 × ln(1 / tanh(β × Γ / M))` where M = `trotter_slices`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `beta` | `float` | Inverse temperature β |
+| `gamma` | `float` | Transverse field strength Γ |
+| `trotter_slices` | `int` | Number of imaginary-time slices M (default 32) |
+
+Returns: `float` — the Trotter coupling J⊥ > 0.
+
+**Physical meaning**: J⊥ controls how strongly adjacent imaginary-time slices are coupled.
+Large J⊥ (high Γ, low β) → strong quantum fluctuations. Small J⊥ (low Γ, high β) → nearly
+classical state. J⊥ decreases monotonically with β (larger β = lower temperature = smaller J⊥).
+
+```python
+from qanneal import j_perp_from_beta_gamma
+
+jp = j_perp_from_beta_gamma(beta=2.0, gamma=1.0, trotter_slices=32)  # → ~0.85
+jp = j_perp_from_beta_gamma(beta=0.5, gamma=2.0, trotter_slices=16)  # → ~2.1 (more quantum)
+```
+
+---
+
+### `optimal_j_perp_params(problem, mode="balanced", trotter_slices=32, probes=256, seed=1234, n=None)` *(new in 0.4.0)*
+
+Problem-adaptive parameters for the optimal J⊥ schedule.
+
+Returns `(beta, j_perp_start, j_perp_end)` computed from the problem's energy scale.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `problem` | any | Supported problem type (same as `solve()`) |
+| `mode` | `str` | `"fast"`, `"balanced"`, `"accurate"` — sets β and Γ range |
+| `trotter_slices` | `int` | Trotter slices M (must match the annealer you'll use) |
+| `probes` | `int` | Random flip samples for energy-scale estimation |
+| `seed` | `int` | RNG seed for probes |
+
+Returns:
+- `beta` — inverse temperature to hold fixed during the run (cold end of the standard schedule)
+- `j_perp_start` — J⊥ at the start (quantum end; `gamma_start` mapped through `j_perp_from_beta_gamma`)
+- `j_perp_end` — J⊥ at the end (classical end; `gamma_end` mapped through `j_perp_from_beta_gamma`)
+
+Note: J⊥ **increases** from `j_perp_start` to `j_perp_end` because Γ decreases — the system
+moves from the quantum regime (large Γ, large J⊥) toward the classical regime (small Γ, small J⊥)
+and then through to the over-coupled regime (very small Γ → J⊥ diverges; in practice clamped to
+`j_perp_end`).
+
+```python
+from qanneal import optimal_j_perp_params
+
+beta, jp_start, jp_end = optimal_j_perp_params(ising, mode="balanced", trotter_slices=32)
+# e.g. beta=3.2, jp_start=0.08, jp_end=3.7
+```
+
+---
+
 ### `auto_ladder_sqa_tuned(problem, replicas=8, mode="balanced", probes=256, seed=1234, n=None)`
 
 **Problem-adaptive SQAPT ladder.** Builds a `(β, Γ)` ladder for parallel tempering.
@@ -414,6 +485,61 @@ result.energy_trace        # energy at each temperature step
 
 ---
 
+**`run_optimal(beta, j_perp_start, j_perp_end, eps_tilde, alpha=15/14, num_steps=100, sweeps_per_step=20, worldline_sweeps=0, cluster_sweeps=0)` → `SQAResult`** *(new in 0.4.0)*
+
+Adaptive J⊥ schedule guided by the local adiabaticity condition. Replaces the fixed (β, Γ) schedule
+with a feedback loop that measures the bond susceptibility χ_B after each sweep and takes a step
+proportional to `ε̃ · χ_B^{-α}`. Stops as soon as J⊥ reaches `j_perp_end` or `num_steps` is exhausted.
+
+**Algorithm**: Each adaptive step consists of `sweeps_per_step` Metropolis sweeps + `worldline_sweeps`
+worldline sweeps + `cluster_sweeps` cluster sweeps. After every full sweep, the current bond sum B
+is recorded. At the end of the step, χ_B = Var(B) is estimated from all within-step samples pooled
+across all replicas. Then `J_⊥ += ε̃ · χ_B^{-α}`.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `beta` | — | **Required.** Fixed inverse temperature β throughout the run. Use `optimal_j_perp_params()` to auto-compute. |
+| `j_perp_start` | — | **Required.** Starting Trotter coupling J⊥ (quantum end). |
+| `j_perp_end` | — | **Required.** Target Trotter coupling J⊥ (classical end). Must be > `j_perp_start`. |
+| `eps_tilde` | — | **Required.** Adiabaticity parameter ε̃ > 0. Smaller = slower/more adiabatic. Typical: 0.01–0.1. |
+| `alpha` | `15/14` | Universality exponent α = z/(2−η) + 1/2. `15/14` for the 1-D quantum Ising universality class. |
+| `num_steps` | `100` | Maximum number of adaptive steps. |
+| `sweeps_per_step` | `20` | Metropolis sweeps per adaptive step. |
+| `worldline_sweeps` | `0` | Worldline sweeps per adaptive step (same as `run()`). |
+| `cluster_sweeps` | `0` | Swendsen–Wang cluster sweeps per adaptive step (enables SQA+SW). |
+
+**Raises** `ValueError` if:
+- `num_steps == 0`
+- `eps_tilde <= 0`
+- `j_perp_end <= j_perp_start`
+- All of `sweeps_per_step`, `worldline_sweeps`, `cluster_sweeps` are 0
+
+Returns `SQAResult` with `j_perp_trace` populated (see [Result Classes](#result-classes)).
+
+```python
+from qanneal import SQAAnnealer, SQASchedule, optimal_j_perp_params
+
+dummy = SQASchedule.from_vectors([3.0], [0.01])
+ann = SQAAnnealer(ising, dummy, trotter_slices=32, replicas=4)
+
+beta, jp_start, jp_end = optimal_j_perp_params(ising)
+result = ann.run_optimal(
+    beta=beta,
+    j_perp_start=jp_start,
+    j_perp_end=jp_end,
+    eps_tilde=0.05,
+    alpha=15/14,
+    num_steps=200,
+    sweeps_per_step=20,
+    worldline_sweeps=3,
+    cluster_sweeps=1,  # enables SQA+SW variant
+)
+print(result.best_energy)
+print(result.j_perp_trace[:5])  # first 5 J_perp values
+```
+
+---
+
 ### `SQAParallelTemperingAnnealer(hamiltonian, betas, gammas, trotter_slices, backend="cpu")`
 
 SQA with replica exchange on a (β, Γ) ladder — the closest CPU simulation of a quantum annealer.
@@ -440,6 +566,58 @@ result.swap_acceptance_trace   # good swap acceptance is 0.2–0.5
 ```
 
 **`run(sweeps_per_step, worldline_sweeps, steps, swap_interval=1, cluster_sweeps=0, continuous_time_slices=0)` → `SQAParallelTemperingResult`**
+
+---
+
+**`run_optimal(num_steps, sweeps_per_step, worldline_sweeps, eps_tilde, alpha=15/14, j_perp_end=0.0, cluster_sweeps=0, swap_interval=1, continuous_time_slices=0)` → `SQAParallelTemperingResult`** *(new in 0.4.0)*
+
+Optimal adaptive J⊥ schedule for SQAPT (and SQAPT+SW when `cluster_sweeps > 0`).
+
+All replicas share a single J⊥ that evolves via the same local adiabaticity ODE as `SQAAnnealer.run_optimal()`.
+Each replica keeps its own fixed β and Γ from the ladder. PT swaps reduce to a **purely classical
+criterion** when J⊥ is shared (the Trotter terms cancel in the acceptance ratio).
+
+χ_B is estimated by **pooling** B-samples across all replicas. Near the critical point
+(within-replica autocorrelation time ≫ sweeps_per_step), the pooled estimate collapses to the
+cross-replica variance — giving the same quality as the pre-0.4.0 single-snapshot estimator.
+Away from the critical point, more effective independent samples improve the estimate.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `num_steps` | — | **Required.** Maximum adaptive steps. |
+| `sweeps_per_step` | — | **Required.** Metropolis sweeps per step. |
+| `worldline_sweeps` | — | **Required.** Worldline sweeps per step. |
+| `eps_tilde` | — | **Required.** Adiabaticity parameter ε̃ > 0. |
+| `alpha` | `15/14` | Universality exponent (same meaning as `SQAAnnealer.run_optimal`). |
+| `j_perp_end` | `0.0` | Target J⊥. If 0 or ≤ j_perp_start, auto-computed as `j_perp_from_beta_gamma(betas[0], gammas[-1], slices)`. |
+| `cluster_sweeps` | `0` | Swendsen–Wang cluster sweeps per step (enables SQAPT+SW). |
+| `swap_interval` | `1` | Attempt replica swap every N steps. |
+| `continuous_time_slices` | `0` | CT approximation slice count. |
+
+**Raises** `ValueError` if:
+- `num_steps == 0`
+- `swap_interval == 0`
+- `eps_tilde <= 0`
+- All of `sweeps_per_step`, `worldline_sweeps`, `cluster_sweeps` are 0
+
+```python
+from qanneal import SQAParallelTemperingAnnealer, auto_ladder_sqa_tuned
+
+ladder = auto_ladder_sqa_tuned(ising, replicas=8, mode="balanced")
+pt = SQAParallelTemperingAnnealer(ising, ladder.betas, ladder.gammas, trotter_slices=32)
+
+result = pt.run_optimal(
+    num_steps=200,
+    sweeps_per_step=20,
+    worldline_sweeps=3,
+    eps_tilde=0.02,
+    alpha=15/14,
+    cluster_sweeps=1,   # SQAPT+SW variant
+    swap_interval=1,
+)
+print(result.best_energy)
+print(result.swap_acceptance_trace[-1])  # final swap acceptance rate
+```
 
 ---
 
@@ -522,13 +700,32 @@ From `ParallelTemperingAnnealer.run()`.
 ---
 
 ### `SQAResult`
-From `SQAAnnealer.run()`.
+From `SQAAnnealer.run()` and `SQAAnnealer.run_optimal()`.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `best_state` | `State` | Best classical projection (best Trotter slice) |
+| `best_state` | `State` | Best classical projection (best Trotter slice across all replicas and steps) |
 | `best_energy` | `float` | Energy of best_state |
-| `energy_trace` | `list[float]` | Energy trace |
+| `energy_trace` | `list[float]` | Energy at each temperature step (standard `run()`) or each adaptive step (`run_optimal()`) |
+| `j_perp_trace` | `list[float]` | J⊥ value at each adaptive step *(new in 0.4.0; empty for standard `run()`)* |
+
+**`j_perp_trace` notes**:
+- Populated only by `run_optimal()`. Empty list when using `run()`.
+- Length equals the number of adaptive steps taken (≤ `num_steps`).
+- Monotonically non-decreasing: each entry is ≥ the previous one.
+- Last value is `j_perp_end` if the schedule finished early, otherwise slightly below.
+- `len(j_perp_trace) == len(energy_trace)` always.
+
+```python
+result = ann.run_optimal(beta=3.0, j_perp_start=0.05, j_perp_end=3.0,
+                         eps_tilde=0.05, num_steps=200, sweeps_per_step=20)
+
+import matplotlib.pyplot as plt
+plt.plot(result.j_perp_trace, result.energy_trace)
+plt.xlabel("J_perp"); plt.ylabel("Energy")
+plt.title("Energy vs Trotter coupling (optimal schedule)")
+plt.show()
+```
 
 ---
 
@@ -670,7 +867,7 @@ runs multiple reads, and returns the best result.
 |-----------|---------|---------|-------------|
 | `method` | `"sqa"` | all | `"sa"`, `"sqa"`, `"sqapt"`, `"ctpimc"` |
 | `reads` | 1 | all | Independent runs; best is returned |
-| `sweeps_per_beta` | 20 | all | Sweeps per temperature step |
+| `sweeps_per_beta` | 20 | all | Sweeps per temperature step (also `sweeps_per_step` in optimal mode) |
 | `schedule` | None | all | Schedule object; auto-selected if None |
 | `seed` | None | all | RNG seed (int); None = random |
 | `backend` | `"cpu"` | all | Compute backend |
@@ -682,12 +879,35 @@ runs multiple reads, and returns the best result.
 | `worldline_sweeps` | 5 | sqa, sqapt | Time-direction sweeps per step |
 | `cluster_sweeps` | 0 | sqa, sqapt | Swendsen–Wang cluster sweeps |
 | `continuous_time_slices` | 0 | sqa, sqapt | CT approximation slice count |
-| `pt_steps` | 50 | sqapt | Local-update + swap epochs |
+| `pt_steps` | 50 | sqapt | Local-update + swap epochs (standard schedule only) |
 | `swap_interval` | 1 | sqapt | Steps between swap attempts |
 | `pt_betas` | None | sqapt | Explicit β ladder (overrides schedule) |
 | `pt_gammas` | None | sqapt | Explicit Γ ladder (must pair with pt_betas) |
 | `ctpimc_qubits_per_update` | 1 | ctpimc | Update cluster size |
 | `ctpimc_qubits_per_chain` | 1 | ctpimc | Chain length for lattice mode |
+| **`schedule_type`** | `"standard"` | sqa, sqapt | **`"optimal"`** to use the locally-adiabatic adaptive J⊥ schedule *(new in 0.4.0)* |
+| `optimal_eps_tilde` | `0.05` | sqa, sqapt | Adiabaticity parameter ε̃ for `schedule_type="optimal"`. Smaller = slower/more precise |
+| `optimal_alpha` | `15/14` | sqa, sqapt | Universality exponent α (default = 1-D quantum Ising class) |
+| `optimal_num_steps` | `100` | sqa, sqapt | Max adaptive steps (auto-derived from schedule length if None) |
+| `optimal_j_perp_start` | None | sqa, sqapt | Starting J⊥ (auto-computed from problem scale if None) |
+| `optimal_j_perp_end` | None | sqa, sqapt | Target J⊥ (auto-computed from problem scale if None) |
+| `optimal_beta` | None | sqa, sqapt | Fixed β during the run (auto-computed from problem scale if None) |
+
+**`schedule_type="optimal"` example**:
+```python
+result = solve(
+    problem,
+    method="sqapt",
+    schedule_type="optimal",
+    replicas=8,
+    reads=4,
+    worldline_sweeps=3,
+    cluster_sweeps=1,        # enables SQAPT+SW
+    optimal_eps_tilde=0.02,
+    optimal_num_steps=300,
+    # all optimal_* params are auto-computed from problem scale if omitted
+)
+```
 
 ---
 
