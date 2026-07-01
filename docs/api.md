@@ -1,4 +1,4 @@
-# qanneal API Reference — v0.4.0
+# qanneal API Reference — v0.6.1
 
 Complete reference for every public class, function, and parameter.
 
@@ -18,14 +18,23 @@ Complete reference for every public class, function, and parameter.
 
 ---
 
-## What's New in 0.4.0
+## What's New
 
-- `SQAAnnealer.run_optimal()` — locally-adiabatic J⊥ schedule for SQA and SQA+SW
-- `SQAParallelTemperingAnnealer.run_optimal()` — same for SQAPT and SQAPT+SW
-- `SQAResult.j_perp_trace` — record of J⊥ at each adaptive step
-- `solve(..., schedule_type="optimal")` — one-call access to the optimal schedule
-- `j_perp_from_beta_gamma()` — convert (β, Γ) to Trotter coupling
-- `optimal_j_perp_params()` — problem-adaptive (β, j_perp_start, j_perp_end) helper
+**0.6.1**
+- SQA `run_optimal()` **two-phase protocol**: β-ramp (thermal) then calibrated adaptive J⊥
+  (`beta_ramp_fraction`, default 0.3; also `solve(optimal_beta_ramp_fraction=...)`).
+- `optimal_j_perp_params()` β fix: `beta_end = max(4/j_rms, 1.0)` so `β·j_rms ≥ 4` (the old
+  formula collapsed to β≈0.02 for strong couplings, crippling SQA-opt).
+- `DenseIsing.couplings()` / `DenseIsing.fields()` accessors; `j_rms_from_problem()` reads them.
+
+**0.6.0** — budget calibration + inverse-CDF trajectory ported to `SQAAnnealer.run_optimal()`.
+
+**0.5.0** — `run_optimal()` **budget calibration** (`eps_tilde<=0` calibrates per instance),
+inverse-CDF trajectory, no early break; new result fields `chi_B_trace`,
+`calibrated_eps_tilde`, `j_perp_start`, `resolved_j_perp_end`, `final_j_perp`; `debug_csv_path`.
+
+**0.4.0** — original `run_optimal()` for SQA/SQAPT (+SW), `schedule_type="optimal"` in
+`solve()`, `j_perp_from_beta_gamma()`, `optimal_j_perp_params()`, `SQAResult.j_perp_trace`.
 
 ---
 
@@ -485,11 +494,16 @@ result.energy_trace        # energy at each temperature step
 
 ---
 
-**`run_optimal(beta, j_perp_start, j_perp_end, eps_tilde, alpha=15/14, num_steps=100, sweeps_per_step=20, worldline_sweeps=0, cluster_sweeps=0)` → `SQAResult`** *(new in 0.4.0)*
+**`run_optimal(beta, j_perp_start, j_perp_end, eps_tilde, alpha=15/14, num_steps=100, sweeps_per_step=20, worldline_sweeps=0, cluster_sweeps=0, calib_probes=12, calib_sweeps=10, debug_csv_path="", beta_ramp_fraction=0.3, beta_ramp_start=0.1)` → `SQAResult`**
 
-Adaptive J⊥ schedule guided by the local adiabaticity condition. Replaces the fixed (β, Γ) schedule
-with a feedback loop that measures the bond susceptibility χ_B after each sweep and takes a step
-proportional to `ε̃ · χ_B^{-α}`. Stops as soon as J⊥ reaches `j_perp_end` or `num_steps` is exhausted.
+Adaptive J⊥ schedule from the local adiabaticity condition. **`eps_tilde <= 0` (recommended)**
+triggers per-instance **budget calibration**: a pilot pre-pass (`calib_probes` × `calib_sweeps`)
+measures χ_B(J), then J⊥ follows the inverse-CDF of `∫ χ_B^α dJ` so the run traverses
+`[j_perp_start, j_perp_end]` in exactly `num_steps` (no early break). A positive `eps_tilde` keeps
+the legacy online update `ε̃·χ_B^{-α}`. **Two-phase**: phase 1 ramps β from `beta_ramp_start` to
+`beta` at fixed J⊥ for `beta_ramp_fraction·num_steps` steps (thermal anneal); phase 2 fixes β and
+runs the adaptive J⊥ ramp. `debug_csv_path` writes per-step diagnostics. Result adds `chi_B_trace`,
+`calibrated_eps_tilde`, `j_perp_start`, `resolved_j_perp_end`, `final_j_perp`.
 
 **Algorithm**: Each adaptive step consists of `sweeps_per_step` Metropolis sweeps + `worldline_sweeps`
 worldline sweeps + `cluster_sweeps` cluster sweeps. After every full sweep, the current bond sum B
@@ -569,9 +583,14 @@ result.swap_acceptance_trace   # good swap acceptance is 0.2–0.5
 
 ---
 
-**`run_optimal(num_steps, sweeps_per_step, worldline_sweeps, eps_tilde, alpha=15/14, j_perp_end=0.0, cluster_sweeps=0, swap_interval=1, continuous_time_slices=0)` → `SQAParallelTemperingResult`** *(new in 0.4.0)*
+**`run_optimal(num_steps, sweeps_per_step, worldline_sweeps, eps_tilde, alpha=15/14, j_perp_end=0.0, cluster_sweeps=0, swap_interval=1, continuous_time_slices=0, calib_probes=12, calib_sweeps=10, debug_csv_path="")` → `SQAParallelTemperingResult`**
 
-Optimal adaptive J⊥ schedule for SQAPT (and SQAPT+SW when `cluster_sweeps > 0`).
+Optimal adaptive J⊥ schedule for SQAPT (and SQAPT+SW when `cluster_sweeps > 0`). `eps_tilde <= 0`
+triggers budget calibration exactly as in `SQAAnnealer.run_optimal` (pilot pre-pass + inverse-CDF
+trajectory, no early break). `j_perp_end=0.0` is a sentinel that resolves to the coldest replica's
+Trotter coupling (a warning is emitted); pass an explicit `j_perp_end = max(j_perp_start, 5·j_rms)`
+for a real quantum range. SQAPT does **not** use the SQA two-phase β-ramp — its β-ladder + replica
+swaps already provide thermal mobility. Result adds the same calibration diagnostics as SQA.
 
 All replicas share a single J⊥ that evolves via the same local adiabaticity ODE as `SQAAnnealer.run_optimal()`.
 Each replica keeps its own fixed β and Γ from the ladder. PT swaps reduce to a **purely classical

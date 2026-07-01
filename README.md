@@ -1,6 +1,6 @@
 # qanneal
 
-**Research-grade Ising/QUBO optimizer** — version 0.4.0
+**Research-grade Ising/QUBO optimizer** — version 0.6.1
 
 Four annealing engines from classical SA to the closest available CPU simulation of quantum annealing, plus a theoretically-grounded **optimal adaptive J⊥ schedule** derived from the local adiabaticity condition.
 
@@ -30,7 +30,7 @@ setup.bat         # Windows cmd
 ./setup.ps1       # Windows PowerShell
 ```
 
-Requires: Python ≥ 3.9, numpy, C++17 compiler.
+Requires: Python ≥ 3.11, numpy, C++17 compiler.
 Optional: OpenMP (parallel replicas), MPI (multi-node), matplotlib (plots).
 
 ---
@@ -142,25 +142,38 @@ E(s) = Σᵢ hᵢ sᵢ  +  Σᵢ<ⱼ Jᵢⱼ sᵢ sⱼ  +  c
 
 ---
 
-## Optimal Adaptive Schedule *(new in 0.4.0)*
+## Optimal Adaptive Schedule *(calibrated since 0.5.0; SQA two-phase since 0.6.1)*
 
-The optimal schedule automatically paces the annealing based on real-time measurements
-of the bond susceptibility χ_B — the quantum fluctuation that diverges at the SQA critical
-point. This implements the **local adiabaticity condition** from Roland & Cerf (2002) for
-the Suzuki–Trotter path integral.
+The optimal schedule paces the transverse-field ramp using the bond susceptibility
+`χ_B = Var(B)`, a proxy for how close the Suzuki–Trotter path integral is to its quantum
+critical point. It implements the **local adiabaticity condition** (Roland & Cerf, 2002)
+for the path integral: move J⊥ slowly where the system is critical, quickly where it is not.
 
-### How it works
+**χ_B is large near the quantum transition and collapses toward zero in the ordered phase**
+(it does *not* diverge). The schedule therefore *dwells* in the low-J⊥ critical region and
+crosses the ordered region quickly — a fast-slow-fast trajectory.
 
-```
-dJ_⊥ / dt  =  ε̃ · χ_B^{-α}
-```
+### How it works (budget-calibrated, the default)
 
-- `J_⊥(t)` — Trotter coupling (encodes quantum tunneling). Large J_⊥ = strong tunneling.
-- `χ_B = Var(B)` where `B = Σ_{k,i} s^k_i · s^{k+1}_i` (imaginary-time bond sum). Diverges at the SQA quantum critical point.
-- `ε̃` (`optimal_eps_tilde`) — overall speed. Smaller = more adiabatic = slower but better.
-- `α` (`optimal_alpha`) — universality class exponent. Default `15/14` for the 1-D quantum Ising class.
+Pass `optimal_eps_tilde=0.0` (the default) to request **per-instance budget calibration**. A
+short pilot pre-pass measures `χ_B(J)` at a grid of J⊥ points, then the run follows the
+inverse-CDF of `∫ χ_B(J)^α dJ`, which guarantees — by construction, independent of the χ_B
+shape — that the schedule (a) consumes exactly `optimal_num_steps`, (b) reaches `j_perp_end`,
+and (c) dwells where χ_B is large. This replaces the old fixed-`ε̃` update, which could
+"freeze" (barely move J⊥) when χ_B was large.
 
-The algorithm **automatically slows down near criticality** (large χ_B → small step) and speeds up away from it. No manual schedule design required.
+- `α` (`optimal_alpha`) — universality-class exponent, default `15/14` (1-D quantum Ising).
+- `j_perp_end` — auto-set to `max(j_perp_start, 5·j_rms)` from the coupling scale.
+- All schedule parameters adapt to *your* problem's coupling scale; nothing is hard-coded.
+
+**SQA runs a two-phase protocol** (`optimal_beta_ramp_fraction`, default 0.3): phase 1 ramps
+β from `beta_ramp_start` up to a cold `β = max(4/j_rms, 1)` at fixed J⊥ (thermal anneal),
+then phase 2 fixes β and runs the calibrated adaptive J⊥ ramp. Without phase 1, single-
+temperature SQA has no thermal annealing and underperforms.
+
+> **When does it help?** The advantage appears for genuinely hard, frustrated Ising problems
+> whose coupling scale puts them near a quantum transition (`j_rms ≳ j_perp_start ≈ 2.9`). Use
+> `scripts/sanity_schedule.py` to check a new instance is in the favorable regime first.
 
 ### Quickstart
 
@@ -169,53 +182,47 @@ from qanneal import solve
 
 result = solve(
     problem,
-    method="sqa",          # or "sqapt" for better performance
+    method="sqa",             # or "sqapt"
     schedule_type="optimal",
-    reads=8,
+    reads=15,
     replicas=4,
-    optimal_eps_tilde=0.05,   # smaller = more adiabatic
-    optimal_num_steps=200,    # max adaptive steps
-    # optional overrides — auto-computed from problem scale if omitted:
-    # optimal_beta=3.0,
-    # optimal_j_perp_start=0.05,
-    # optimal_j_perp_end=3.0,
+    optimal_eps_tilde=0.0,    # 0.0 = per-instance budget calibration (recommended)
+    optimal_num_steps=150,
+    # optional overrides — all auto-computed from the problem scale if omitted:
+    # optimal_j_perp_end=25.0,          # default max(j_perp_start, 5*j_rms)
+    # optimal_beta_ramp_fraction=0.3,   # SQA two-phase split
     # optimal_alpha=15/14,
+    # optimal_debug_csv="schedule.csv", # per-step J_perp / chi_B diagnostics
 )
-print(result.best_energy)
-print(result.best_sample)
+print(result.best_energy, result.best_sample)
 ```
 
-### SQAPT + optimal schedule (recommended)
+### SQAPT + optimal schedule
 
 ```python
-from qanneal import solve, auto_ladder_sqa_tuned
-
 result = solve(
     problem,
     method="sqapt",
     schedule_type="optimal",
     replicas=8,
-    reads=4,
+    reads=15,
     trotter_slices=32,
     worldline_sweeps=3,
-    cluster_sweeps=1,        # SQAPT+SW: Swendsen-Wang cluster updates
+    cluster_sweeps=0,         # >0 adds Swendsen–Wang cluster updates (SQAPT-SW)
     swap_interval=1,
-    optimal_eps_tilde=0.02,
-    optimal_num_steps=300,
+    optimal_eps_tilde=0.0,    # calibrated
+    optimal_num_steps=150,
 )
 ```
 
 ### J⊥ schedule helpers
 
 ```python
-from qanneal import j_perp_from_beta_gamma, optimal_j_perp_params
+from qanneal import j_perp_from_beta_gamma, optimal_j_perp_params, j_rms_from_problem
 
-# Convert (beta, gamma) to the Trotter coupling J_perp
-jp = j_perp_from_beta_gamma(beta=3.0, gamma=0.5, trotter_slices=32)
-# → 0.5 * ln(1 / tanh(beta*gamma/M))
-
-# Auto-compute problem-adapted beta, j_perp_start, j_perp_end
-beta, jp_start, jp_end = optimal_j_perp_params(problem, trotter_slices=32)
+jp = j_perp_from_beta_gamma(beta=3.0, gamma=0.5, trotter_slices=32)  # 0.5*ln(1/tanh(βγ/M))
+beta, jp_start, jp_end = optimal_j_perp_params(problem, trotter_slices=32)  # β=max(4/j_rms,1)
+jr = j_rms_from_problem(problem)   # RMS of the present couplings (ndarray/DenseIsing/BQM/graph)
 ```
 
 ### Direct C++ / low-level API
@@ -223,24 +230,24 @@ beta, jp_start, jp_end = optimal_j_perp_params(problem, trotter_slices=32)
 ```python
 from qanneal import SQAAnnealer, SQASchedule
 
-dummy = SQASchedule.from_vectors([3.0], [0.01])  # only used for construction
+dummy = SQASchedule.from_vectors([1.0], [1.0])  # only used for construction
 ann = SQAAnnealer(ising, dummy, trotter_slices=32, replicas=4)
 result = ann.run_optimal(
-    beta=3.0,
-    j_perp_start=0.05,
-    j_perp_end=3.0,
-    eps_tilde=0.05,
-    alpha=15/14,
-    num_steps=200,
-    sweeps_per_step=20,
-    worldline_sweeps=3,
-    cluster_sweeps=1,
+    beta=1.0,                # phase-2 (cold) inverse temperature
+    j_perp_start=0.1, j_perp_end=25.0,
+    eps_tilde=0.0,           # <=0 -> budget calibration
+    alpha=15/14, num_steps=150, sweeps_per_step=20,
+    worldline_sweeps=3, cluster_sweeps=0,
+    calib_probes=12, calib_sweeps=10,   # pilot pre-pass grid
+    beta_ramp_fraction=0.3,             # two-phase thermal ramp
 )
-# result.j_perp_trace — list of J_perp values at each adaptive step
-# result.energy_trace — energy at each adaptive step
-# result.best_state   — State with best spin configuration
-# result.best_energy  — float
+# result.j_perp_trace, result.chi_B_trace — per-step schedule diagnostics
+# result.calibrated_eps_tilde, result.final_j_perp — calibration read-outs
+# result.best_state, result.best_energy
 ```
+
+See `docs/optimal_schedule.md` for the full derivation, calibration math, and benchmark
+methodology, and `benchmarks/schedule/` for the reproducible study.
 
 ---
 

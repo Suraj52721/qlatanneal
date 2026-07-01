@@ -12,12 +12,22 @@ license = {file = "LICENSE"}
 authors = [
   {name = "qanneal contributors"}
 ]
+keywords = [
+  "quantum-annealing", "simulated-annealing", "ising", "qubo", "optimization",
+  "parallel-tempering", "monte-carlo", "combinatorial-optimization",
+]
 classifiers = [
+  "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "License :: OSI Approved :: Apache Software License",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Physics",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
 ]
 
 dependencies = ["numpy>=1.24"]
@@ -27,15 +37,7 @@ cmake.build-type = "Release"
 cmake.version = ">=3.18"
 wheel.packages = ["python/qanneal"]
 cmake.define = { QANNEAL_BUILD_PYTHON = "ON" }
-sdist.include = [
-  "CMakeLists.txt",
-  "cmake/**",
-  "include/**",
-  "src/**",
-  "python/**",
-  "tests/**",
-  "examples/**",
-  "README.md",
-  "LICENSE",
-  "NOTICE"
-]
+# The SDist is built from git-tracked files (build artifacts and compiled extensions are
+# gitignored). README/CHANGELOG/LICENSE/NOTICE are pulled in via the [project] metadata.
+sdist.include = ["CHANGELOG.md"]
+sdist.exclude = ["examples/**/*.png", "examples/**/*.json", "docs/latex", "notebooks"]

@@ -1,0 +1,32 @@
+# Build outputs
+/build/
+/build_*/
+_skbuild/
+dist/
+*.egg-info/
+wheelhouse/
+
+# Compiled extensions / objects
+*.so
+*.o
+*.a
+*.dylib
+*.pyd
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Editor / OS
+.vscode/
+.DS_Store
+
+# Benchmark / run outputs (keep the code, not the generated data)
+benchmark_v5_plots/
+benchmark_v6_plots/
+benchmarks/**/results/
+benchmarks/**/plots/
+*.slurm.out

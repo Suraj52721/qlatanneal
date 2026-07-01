@@ -1,1 +1,0 @@
-/usr/bin/c++  -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/qanneal_replica_tests.dir/tests/test_replica_annealer.cpp.o -o qanneal_replica_tests  libqanneal_core.a
