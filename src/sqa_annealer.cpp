@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iostream>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -502,7 +504,12 @@ SQAResult SQAAnnealer::run_optimal(double beta,
                                    std::size_t num_steps,
                                    std::size_t sweeps_per_step,
                                    std::size_t worldline_sweeps,
-                                   std::size_t cluster_sweeps) {
+                                   std::size_t cluster_sweeps,
+                                   std::size_t calib_probes,
+                                   std::size_t calib_sweeps,
+                                   const std::string &debug_csv_path,
+                                   double beta_ramp_fraction,
+                                   double beta_ramp_start) {
     if (num_steps == 0) {
         throw std::invalid_argument("num_steps must be > 0.");
     }
@@ -512,15 +519,15 @@ SQAResult SQAAnnealer::run_optimal(double beta,
     if (j_perp_end <= j_perp_start) {
         throw std::invalid_argument("j_perp_end must be > j_perp_start.");
     }
-    if (eps_tilde <= 0.0) {
-        throw std::invalid_argument("eps_tilde must be > 0.");
-    }
+    // eps_tilde <= 0 now requests budget calibration (see calibration block below); a positive
+    // value keeps the legacy online update. This matches SQAParallelTemperingAnnealer::run_optimal.
+    const bool calibrate = (eps_tilde <= 0.0);
 
     const std::size_t n = backend_->size();
     const std::size_t slices = slices_;
     const double beta_scale = beta / static_cast<double>(slices);
     const double nM = static_cast<double>(n * slices);
-    const double min_chi_B = 1e-4 * nM;
+    double min_chi_B = 1e-4 * nM;  // rescaled below when calibrating
 
     SQAState state = SQAState::random(replicas_, slices, n, rng_);
 
@@ -562,11 +569,13 @@ SQAResult SQAAnnealer::run_optimal(double beta,
         v.reserve(samples_per_replica > 0 ? samples_per_replica : 1);
     }
 
-    double j_perp = j_perp_start;
-
-    for (std::size_t step = 0; step < num_steps; ++step) {
-        const double join_prob = 1.0 - std::exp(-2.0 * j_perp);
-
+    // Per-step replica sweep, factored so the calibration pre-pass and the main loop drive
+    // chi_B with the *same* sampler (mirrors SQAParallelTemperingAnnealer::run_optimal). Operates
+    // on the captured `state`, `local_fields`, and `replica_rng`; j_perp and the sweep counts are
+    // parameters so calibration can probe at a fixed j_perp with fewer sweeps. Fills B_sweep_samples.
+    auto sweep_current = [&](double j_perp_local, double beta_scale_local, std::size_t n_metro,
+                             std::size_t n_cluster, std::size_t n_world) {
+        const double join_prob = 1.0 - std::exp(-2.0 * j_perp_local);
 #ifdef _OPENMP
 #pragma omp parallel for if(replicas_ > 1) schedule(static)
 #endif
@@ -586,7 +595,7 @@ SQAResult SQAAnnealer::run_optimal(double beta,
             auto &samples = B_sweep_samples[replica];
             samples.clear();
 
-            for (std::size_t sweep = 0; sweep < sweeps_per_step; ++sweep) {
+            for (std::size_t sweep = 0; sweep < n_metro; ++sweep) {
                 std::shuffle(my_spin_order.begin(), my_spin_order.end(), local_rng);
                 for (std::size_t t = 0; t < slices; ++t) {
                     int8_t *sptr = state.slice_ptr(replica, t);
@@ -604,8 +613,8 @@ SQAResult SQAAnnealer::run_optimal(double beta,
                         const int nn_sum = static_cast<int>(s_prev) + static_cast<int>(s_next);
                         const double de_classical = -2.0 * static_cast<double>(s) * fields[spin];
                         const double de_trotter =
-                            2.0 * j_perp * static_cast<double>(s) * static_cast<double>(nn_sum);
-                        const double de = beta_scale * de_classical + de_trotter;
+                            2.0 * j_perp_local * static_cast<double>(s) * static_cast<double>(nn_sum);
+                        const double de = beta_scale_local * de_classical + de_trotter;
                         if (de <= 0.0 || uniform(local_rng) < std::exp(-de)) {
                             sptr[spin] = static_cast<int8_t>(-s);
                             backend_->update_local_fields_after_flip(fields, sptr, n, spin, s);
@@ -618,7 +627,7 @@ SQAResult SQAAnnealer::run_optimal(double beta,
                 samples.push_back(b_r);
             }
 
-            for (std::size_t sweep = 0; sweep < cluster_sweeps; ++sweep) {
+            for (std::size_t sweep = 0; sweep < n_cluster; ++sweep) {
                 std::shuffle(my_spin_order.begin(), my_spin_order.end(), local_rng);
                 for (std::size_t idx = 0; idx < n; ++idx) {
                     const std::size_t spin = my_spin_order[idx];
@@ -662,19 +671,19 @@ SQAResult SQAAnnealer::run_optimal(double beta,
                             const double bond =
                                 static_cast<double>(seed_spin) *
                                 static_cast<double>(state.slice_ptr(replica, prev)[spin]);
-                            delta_time += 2.0 * j_perp * bond;
+                            delta_time += 2.0 * j_perp_local * bond;
                             delta_B    += -2.0 * bond;
                         }
                         if (!my_cluster[next]) {
                             const double bond =
                                 static_cast<double>(seed_spin) *
                                 static_cast<double>(state.slice_ptr(replica, next)[spin]);
-                            delta_time += 2.0 * j_perp * bond;
+                            delta_time += 2.0 * j_perp_local * bond;
                             delta_B    += -2.0 * bond;
                         }
                     }
 
-                    const double delta = beta_scale * delta_classical + delta_time;
+                    const double delta = beta_scale_local * delta_classical + delta_time;
                     if (delta <= 0.0 || uniform(local_rng) < std::exp(-delta)) {
                         for (std::size_t t = 0; t < slices; ++t) {
                             if (!my_cluster[t]) continue;
@@ -690,7 +699,7 @@ SQAResult SQAAnnealer::run_optimal(double beta,
                 samples.push_back(b_r);
             }
 
-            for (std::size_t sweep = 0; sweep < worldline_sweeps; ++sweep) {
+            for (std::size_t sweep = 0; sweep < n_world; ++sweep) {
                 std::shuffle(my_spin_order.begin(), my_spin_order.end(), local_rng);
                 for (std::size_t idx = 0; idx < n; ++idx) {
                     const std::size_t spin = my_spin_order[idx];
@@ -700,7 +709,7 @@ SQAResult SQAAnnealer::run_optimal(double beta,
                         de_classical += -2.0 * static_cast<double>(s_t) *
                                         (my_lf + t * n)[spin];
                     }
-                    const double de = beta_scale * de_classical;
+                    const double de = beta_scale_local * de_classical;
                     if (de <= 0.0 || uniform(local_rng) < std::exp(-de)) {
                         for (std::size_t t = 0; t < slices; ++t) {
                             int8_t *sptr = state.slice_ptr(replica, t);
@@ -715,54 +724,41 @@ SQAResult SQAAnnealer::run_optimal(double beta,
                 // No B sample: worldline sweeps cannot change B.
             }
         }
+    };
 
-        // --- Compute chi_B = Var(B) from within-step samples across all replicas ---
-        // Total: replicas_ * (sweeps_per_step + cluster_sweeps) samples per step.
-        //
-        // For replicas >= 2: near criticality, within-replica samples are highly autocorrelated
-        // (τ_int >> sweeps_per_step), so the within-step variance collapses to the cross-replica
-        // variance — same quality as the old estimator.  Away from criticality, more effective
-        // samples improve the estimate.  Net result: always >= old estimator quality.
-        //
-        // For replicas == 1: the within-step variance also collapses near criticality (all S
-        // samples look the same), hitting the min_chi_B floor and causing a max-size step through
-        // the critical point.  Guard against this by taking the max with the per-bond approximation
-        // chi_B ≈ nM*(1 - (B/nM)²), which at least gives a finite non-zero value there.
-        double chi_B;
-        {
-            double B_sum = 0.0, B2_sum = 0.0;
-            std::size_t total_samples = 0;
-            for (std::size_t r = 0; r < replicas_; ++r) {
-                for (double b : B_sweep_samples[r]) {
-                    B_sum  += b;
-                    B2_sum += b * b;
-                    ++total_samples;
-                }
-            }
-            if (total_samples >= 2) {
-                const double B_mean  = B_sum  / static_cast<double>(total_samples);
-                const double B2_mean = B2_sum / static_cast<double>(total_samples);
-                chi_B = std::max(B2_mean - B_mean * B_mean, min_chi_B);
-            } else {
-                const double B = bond_sum_replica(state, 0, slices, n);
-                const double b_avg = B / nM;
-                chi_B = std::max(nM * (1.0 - b_avg * b_avg), min_chi_B);
-            }
-            // Single-replica guard: within-step variance underestimates near criticality.
-            // Take max with per-bond approximation to prevent floor-triggered max steps.
-            if (replicas_ == 1 && !B_sweep_samples[0].empty()) {
-                const double b_last = B_sweep_samples[0].back();
-                const double b_avg  = b_last / nM;
-                const double per_bond = std::max(nM * (1.0 - b_avg * b_avg), min_chi_B);
-                chi_B = std::max(chi_B, per_bond);
+    // Raw chi_B = Var(B) from the current B_sweep_samples (NO min floor; caller floors). Uses the
+    // captured `state` for the single-replica fallback/guard. Matches the SQAPT estimator.
+    auto measure_chi_B_raw = [&]() -> double {
+        double B_sum = 0.0, B2_sum = 0.0;
+        std::size_t total_samples = 0;
+        for (std::size_t r = 0; r < replicas_; ++r) {
+            for (double b : B_sweep_samples[r]) {
+                B_sum  += b;
+                B2_sum += b * b;
+                ++total_samples;
             }
         }
+        double var;
+        if (total_samples >= 2) {
+            const double B_mean  = B_sum  / static_cast<double>(total_samples);
+            const double B2_mean = B2_sum / static_cast<double>(total_samples);
+            var = B2_mean - B_mean * B_mean;
+        } else {
+            const double B = bond_sum_replica(state, 0, slices, n);
+            const double b_avg = B / nM;
+            var = nM * (1.0 - b_avg * b_avg);
+        }
+        // Single-replica guard: within-step variance underestimates near criticality.
+        if (replicas_ == 1 && !B_sweep_samples[0].empty()) {
+            const double b_avg = B_sweep_samples[0].back() / nM;
+            var = std::max(var, nM * (1.0 - b_avg * b_avg));
+        }
+        return var;
+    };
 
-        // --- Optimal schedule update: dJ_perp = eps_tilde * chi_B^(-alpha) ---
-        const double delta_j = eps_tilde * std::pow(chi_B, -alpha);
-        j_perp = std::min(j_perp + delta_j, j_perp_end);
-
-        // --- Track best energy and record traces ---
+    // Scan all worldline slices: update best energy/state and push (avg_energy, j_perp, chi) traces.
+    // Shared by the phase-1 thermal ramp and the phase-2 adaptive J_perp loop.
+    auto record_step = [&](double j_perp_val, double chi_val) {
         double avg_energy = 0.0;
         const std::size_t total_states = replicas_ * slices;
         for (std::size_t r = 0; r < replicas_; ++r) {
@@ -776,13 +772,182 @@ SQAResult SQAAnnealer::run_optimal(double beta,
                 }
             }
         }
-        avg_energy /= static_cast<double>(total_states);
-        result.energy_trace.push_back(avg_energy);
-        result.j_perp_trace.push_back(j_perp);
+        result.energy_trace.push_back(avg_energy / static_cast<double>(total_states));
+        result.j_perp_trace.push_back(j_perp_val);
+        result.chi_B_trace.push_back(chi_val);
+    };
 
-        if (j_perp >= j_perp_end) break;
+    // --- Two-phase split (Day-1 protocol) ---
+    // Phase 1 (beta_ramp_fraction of the budget): ramp beta from beta_ramp_start up to the target
+    //   `beta` at FIXED j_perp = j_perp_start (strong transverse field) — this is the THERMAL anneal
+    //   that fixed-beta quantum-only SQA was missing, and without which SQA-opt read out garbage.
+    // Phase 2 (the rest): fix beta and run the calibrated adaptive J_perp schedule.
+    // beta_ramp_fraction <= 0 recovers the single-phase behaviour.
+    const double bscale_cold = beta / static_cast<double>(slices);
+    std::size_t n_phase1 = 0;
+    if (beta_ramp_fraction > 0.0) {
+        n_phase1 = static_cast<std::size_t>(beta_ramp_fraction * static_cast<double>(num_steps));
+        if (n_phase1 >= num_steps) n_phase1 = num_steps - 1;  // always leave >=1 step for phase 2
+    }
+    const std::size_t n_phase2 = num_steps - n_phase1;
+
+    // Optional per-step diagnostic CSV (opened before calibration so probe rows are captured).
+    std::vector<double> probe_J, probe_chi;
+    std::ofstream dbg;
+    if (!debug_csv_path.empty()) {
+        dbg.open(debug_csv_path);
+        if (dbg) {
+            dbg << "phase,step_index,j_perp,chi_B,delta_j,eps_tilde,alpha,floor_hit,chi_B_online\n";
+            dbg.setf(std::ios::scientific);
+            dbg.precision(8);
+        } else {
+            std::cerr << "[qanneal SQA run_optimal] WARNING: could not open debug CSV '"
+                      << debug_csv_path << "'.\n";
+        }
     }
 
+    // --- PHASE 1: thermal anneal (ramp beta at fixed j_perp_start) ---
+    for (std::size_t step = 0; step < n_phase1; ++step) {
+        const double frac = (n_phase1 > 1) ? static_cast<double>(step) / static_cast<double>(n_phase1 - 1) : 1.0;
+        const double beta_t = beta_ramp_start + (beta - beta_ramp_start) * frac;
+        sweep_current(j_perp_start, beta_t / static_cast<double>(slices),
+                      sweeps_per_step, cluster_sweeps, worldline_sweeps);
+        const double chi = std::max(measure_chi_B_raw(), 0.0);
+        record_step(j_perp_start, chi);
+        if (dbg) {
+            dbg << "beta_ramp," << step << ',' << j_perp_start << ',' << chi << ",0,0,"
+                << alpha << ",0," << beta_t << '\n';
+        }
+    }
+
+    // --- Calibration pre-pass: set eps_tilde = (1/n_phase2) * integral chi_B(J)^alpha dJ, and
+    //     build the profile chi_B(J) that drives the inverse-CDF trajectory (see SQAPT for the
+    //     full derivation). The +alpha exponent and the /n_phase2 are what make the traversal
+    //     budget-exact. Runs at the cold beta on the post-phase-1 state; the pilot mutates
+    //     `state`/`local_fields`, so save and restore them.
+    if (calibrate) {
+        const std::size_t M = std::max<std::size_t>(calib_probes, 2);
+        const std::size_t cs = std::max<std::size_t>(calib_sweeps, 1);
+        const std::size_t pilot_cluster = cluster_sweeps > 0 ? std::max<std::size_t>(cluster_sweeps, 1) : 0;
+
+        SQAState saved_state = state;
+        std::vector<double> saved_fields = local_fields;
+
+        const double dJ = j_perp_end - j_perp_start;
+        const double dJ_probe = dJ / static_cast<double>(M);
+        probe_J.resize(M);
+        probe_chi.resize(M, 0.0);
+        double integral = 0.0;
+        for (std::size_t m = 0; m < M; ++m) {
+            const double Jm = j_perp_start + (static_cast<double>(m) + 0.5) * dJ_probe;
+            sweep_current(Jm, bscale_cold, cs, pilot_cluster, 0);
+            double chi = measure_chi_B_raw();
+            if (!(chi > 0.0)) chi = 0.0;
+            probe_J[m] = Jm;
+            probe_chi[m] = chi;
+            integral += std::pow(std::max(chi, 1e-12), alpha) * dJ_probe;
+            if (dbg) {
+                dbg << "calib," << (static_cast<long long>(m) - static_cast<long long>(M)) << ','
+                    << Jm << ',' << chi << ",0,0," << alpha << ",0," << chi << '\n';
+            }
+        }
+
+        // Restore the run's post-phase-1 state; RNG streams are allowed to advance (pilot noise).
+        state = saved_state;
+        local_fields = saved_fields;
+
+        eps_tilde = integral / static_cast<double>(n_phase2);
+        if (!(eps_tilde > 0.0) || !std::isfinite(eps_tilde)) {
+            std::cerr << "[qanneal SQA run_optimal] WARNING: calibration produced non-positive "
+                         "eps_tilde (integral=" << integral << "); falling back to linear ramp.\n";
+            eps_tilde = std::max(dJ, 0.0) / static_cast<double>(num_steps);
+            if (!(eps_tilde > 0.0)) eps_tilde = 1e-9;
+        }
+
+        std::vector<double> sorted = probe_chi;
+        std::sort(sorted.begin(), sorted.end());
+        const double max_chi = sorted.back();
+        min_chi_B = std::max(1e-4 * max_chi, 1e-12);
+    }
+    result.calibrated_eps_tilde = eps_tilde;
+    result.j_perp_start = j_perp_start;
+    result.resolved_j_perp_end = j_perp_end;
+    result.chi_B_trace.reserve(num_steps);
+
+    // Interpolate the calibration profile chi_B(J) (linear between probes; clamped). -1 when no
+    // profile exists (eps_tilde override path).
+    auto chi_profile_at = [&](double J) -> double {
+        const std::size_t M = probe_J.size();
+        if (M == 0) return -1.0;
+        if (J <= probe_J.front()) return probe_chi.front();
+        if (J >= probe_J.back())  return probe_chi.back();
+        std::size_t hi = 1;
+        while (hi < M && probe_J[hi] < J) ++hi;
+        const std::size_t lo = hi - 1;
+        const double t = (J - probe_J[lo]) / (probe_J[hi] - probe_J[lo]);
+        return probe_chi[lo] + t * (probe_chi[hi] - probe_chi[lo]);
+    };
+
+    // Precompute the J_perp(step) trajectory by inverting G(J) = integral chi_B(J')^alpha dJ', so
+    // the schedule consumes all num_steps, reaches j_perp_end, and dwells where chi_B is large.
+    std::vector<double> j_traj;
+    if (calibrate && !probe_J.empty() && j_perp_end > j_perp_start) {
+        const std::size_t GRID = 4096;
+        const double h = (j_perp_end - j_perp_start) / static_cast<double>(GRID);
+        std::vector<double> Gcum(GRID + 1, 0.0);
+        double prev = std::pow(std::max(chi_profile_at(j_perp_start), min_chi_B), alpha);
+        for (std::size_t k = 1; k <= GRID; ++k) {
+            const double Jk = j_perp_start + static_cast<double>(k) * h;
+            const double cur = std::pow(std::max(chi_profile_at(Jk), min_chi_B), alpha);
+            Gcum[k] = Gcum[k - 1] + 0.5 * (prev + cur) * h;
+            prev = cur;
+        }
+        const double G_total = Gcum[GRID];
+        j_traj.resize(n_phase2);
+        std::size_t k = 0;
+        const double denom = (n_phase2 > 1) ? static_cast<double>(n_phase2 - 1) : 1.0;
+        for (std::size_t t = 0; t < n_phase2; ++t) {
+            const double target = (G_total > 0.0)
+                ? (static_cast<double>(t) / denom) * G_total
+                : 0.0;
+            while (k < GRID && Gcum[k + 1] < target) ++k;
+            const double g0 = Gcum[k], g1 = Gcum[k + 1];
+            const double frac = (g1 > g0) ? (target - g0) / (g1 - g0) : 0.0;
+            j_traj[t] = j_perp_start + (static_cast<double>(k) + frac) * h;
+        }
+    }
+
+    // --- PHASE 2: adaptive J_perp schedule at fixed (cold) beta ---
+    double j_perp = j_perp_start;
+
+    for (std::size_t step = 0; step < n_phase2; ++step) {
+        // Profile-driven trajectory when calibrating; otherwise j_perp advances online below.
+        if (!j_traj.empty()) j_perp = j_traj[step];
+        sweep_current(j_perp, bscale_cold, sweeps_per_step, cluster_sweeps, worldline_sweeps);
+
+        // --- chi_B: profile-driven when calibrating, online otherwise (online kept as diagnostic) ---
+        const double chi_online = measure_chi_B_raw();
+        const double chi_prof = chi_profile_at(j_perp);
+        const double chi_drive_raw = (chi_prof >= 0.0) ? chi_prof : chi_online;
+        const bool floor_hit = (chi_drive_raw < min_chi_B);
+        const double chi_drive = std::max(chi_drive_raw, min_chi_B);
+        const double delta_j = eps_tilde * std::pow(chi_drive, -alpha);
+
+        record_step(j_perp, chi_drive);
+        if (dbg) {
+            dbg << "run," << (n_phase1 + step) << ',' << j_perp << ',' << chi_drive << ',' << delta_j
+                << ',' << eps_tilde << ',' << alpha << ',' << (floor_hit ? 1 : 0)
+                << ',' << std::max(chi_online, 0.0) << '\n';
+        }
+
+        // NOTE: we deliberately do NOT break when j_perp reaches j_perp_end — the run always
+        // consumes all num_steps so opt and std use an identical sweep budget (fair benchmark).
+        if (j_traj.empty()) {
+            j_perp = std::min(j_perp + delta_j, j_perp_end);  // legacy online schedule
+        }
+    }
+
+    result.final_j_perp = j_perp;
     return result;
 }
 

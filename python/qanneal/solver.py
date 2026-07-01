@@ -62,6 +62,63 @@ def j_perp_from_beta_gamma(beta: float, gamma: float, trotter_slices: int = 32) 
     return 0.5 * math.log(1.0 / math.tanh(x))
 
 
+def j_rms_from_problem(problem: Any, n: Optional[int] = None) -> Optional[float]:
+    """
+    Best-effort RMS of the off-diagonal couplings J_ij over the *present* (non-zero)
+    edges:  j_rms = sqrt(mean_{i<j, J_ij != 0} J_ij^2).
+
+    Used to pick a physically-motivated j_perp_end = 5 * j_rms for the optimal schedule
+    (Task 4.2). Returns None when the couplings are not directly inspectable from Python
+    (e.g. an opaque DenseIsing/SparseIsing handle) — callers then fall back to the
+    beta/gamma-derived j_perp_end from optimal_j_perp_params.
+    """
+    import math
+
+    def _rms_from_matrix(M: np.ndarray) -> Optional[float]:
+        M = np.asarray(M, dtype=float)
+        if M.ndim != 2 or M.shape[0] != M.shape[1]:
+            return None
+        iu = np.triu_indices(M.shape[0], k=1)
+        off = M[iu]
+        # Symmetric QUBO/Ising matrices store J_ij in both triangles; the upper
+        # triangle alone is the set of distinct couplings.
+        nz = off[off != 0.0]
+        if nz.size == 0:
+            return None
+        return float(math.sqrt(float(np.mean(nz * nz))))
+
+    try:
+        # qanneal DenseIsing (and anything exposing a couplings() matrix accessor).
+        if hasattr(problem, "couplings") and callable(getattr(problem, "couplings")):
+            return _rms_from_matrix(problem.couplings())
+        if isinstance(problem, np.ndarray):
+            return _rms_from_matrix(problem)
+        if nx is not None and isinstance(problem, nx.Graph):
+            w = [float(d.get("weight", 0.0)) for _, _, d in problem.edges(data=True)]
+            w = [x for x in w if x != 0.0]
+            if not w:
+                return None
+            return float(math.sqrt(sum(x * x for x in w) / len(w)))
+        if isinstance(problem, dict):
+            vals = [float(v) for (i, j), v in problem.items() if i != j and float(v) != 0.0]
+            if not vals:
+                return None
+            return float(math.sqrt(sum(x * x for x in vals) / len(vals)))
+        if isinstance(problem, (list, tuple)) and len(problem) > 0 and isinstance(problem[0], (list, tuple)):
+            vals = [float(e[2]) for e in problem if int(e[0]) != int(e[1]) and float(e[2]) != 0.0]
+            if not vals:
+                return None
+            return float(math.sqrt(sum(x * x for x in vals) / len(vals)))
+        if dimod is not None and isinstance(problem, dimod.BinaryQuadraticModel):
+            vals = [float(b) for b in problem.quadratic.values() if float(b) != 0.0]
+            if not vals:
+                return None
+            return float(math.sqrt(sum(x * x for x in vals) / len(vals)))
+    except Exception:
+        return None
+    return None
+
+
 def optimal_j_perp_params(problem: Any,
                           mode: str = "balanced",
                           trotter_slices: int = 32,
@@ -71,8 +128,17 @@ def optimal_j_perp_params(problem: Any,
     """
     Return (beta, j_perp_start, j_perp_end) for the optimal adaptive schedule.
 
-    beta       — fixed inverse temperature to use during the run (set to beta_end of
-                 the equivalent standard schedule so we're always in the cold regime).
+    beta       — fixed inverse temperature for the (phase-2) adaptive J_perp ramp. It must be
+                 cold enough that the classical energy term dominates thermal noise, i.e.
+                 beta * j_rms >= C. We therefore set
+
+                     beta_end = max(C / j_rms, beta_min)      (C=4, beta_min=1.0)
+
+                 The previous formula beta_end = -log(p_end)/scale scaled INVERSELY with the
+                 coupling magnitude, so for strong couplings (large j_rms) it collapsed to
+                 beta ~ 0.02 (near-infinite temperature): the classical spins never committed
+                 and SQA-opt read out garbage. Tying beta to j_rms fixes that. Falls back to
+                 the delta-scale formula only when the couplings can't be inspected.
     j_perp_start — J_perp corresponding to gamma_start at that beta (quantum end).
     j_perp_end   — J_perp corresponding to gamma_end at that beta (classical end).
     """
@@ -80,7 +146,13 @@ def optimal_j_perp_params(problem: Any,
     p_start, p_end, gamma_mult, gamma_final_ratio, _, sqa_step_base = _mode_params(mode)
     scale = _estimate_delta_scale(ising, probes=probes, seed=seed)
 
-    beta_end = -np.log(p_end) / scale
+    # beta must satisfy beta * j_rms >= C so the classical energy term dominates thermal noise.
+    _C, _beta_min = 4.0, 1.0
+    _jrms = j_rms_from_problem(problem, n=n)
+    if _jrms is not None and _jrms > 0.0:
+        beta_end = max(_C / _jrms, _beta_min)
+    else:
+        beta_end = -np.log(p_end) / scale  # fallback when couplings aren't inspectable
     gamma_start = max(gamma_mult * scale, 1e-3)
     gamma_end = max(gamma_start * gamma_final_ratio, 1e-6)
 
@@ -317,12 +389,16 @@ def solve(problem: Any,
           n: Optional[int] = None,
           return_bits: bool = False,
           schedule_type: str = "standard",
-          optimal_eps_tilde: float = 0.05,
+          optimal_eps_tilde: float = 0.0,
           optimal_alpha: float = 15.0 / 14.0,
           optimal_num_steps: Optional[int] = None,
           optimal_j_perp_start: Optional[float] = None,
           optimal_j_perp_end: Optional[float] = None,
-          optimal_beta: Optional[float] = None) -> SolveResult:
+          optimal_beta: Optional[float] = None,
+          optimal_calib_probes: int = 12,
+          optimal_calib_sweeps: int = 10,
+          optimal_beta_ramp_fraction: float = 0.3,
+          optimal_debug_csv: Optional[str] = None) -> SolveResult:
     """
     Solve a problem using SA, SQA, SQA parallel tempering, or CT-PIMC.
 
@@ -331,10 +407,20 @@ def solve(problem: Any,
         "optimal" uses the local adiabaticity ODE from the Roland-Cerf SQA derivation:
         dJ_perp/dt = eps_tilde * chi_B^(-alpha), where chi_B = Var(B) across replicas.
         Supported for methods "sqa" and "sqapt" (including SQAPT+SW via cluster_sweeps > 0).
-    optimal_eps_tilde: adiabaticity parameter epsilon-tilde (default 0.05).
+    optimal_eps_tilde: adiabaticity parameter epsilon-tilde. Default 0.0 requests budget
+        calibration (a short pilot pre-pass picks eps_tilde so the schedule traverses the
+        full [j_perp_start, j_perp_end] range within optimal_num_steps). Pass a positive
+        value to override calibration with a fixed scale (legacy behavior).
     optimal_alpha: exponent alpha = z/(2-eta)+1/2 (default 15/14, 1-D quantum Ising class).
     optimal_num_steps: max adaptive steps (default: same as standard schedule length).
     optimal_j_perp_start / optimal_j_perp_end / optimal_beta: auto-computed if None.
+        For sqapt, optimal_j_perp_end auto-defaults to max(j_perp_start, 5*j_rms) when the
+        couplings are inspectable, else to the beta/gamma-derived value.
+    optimal_calib_probes / optimal_calib_sweeps: pilot grid size and sweeps-per-probe for
+        budget calibration (sqapt only).
+    optimal_debug_csv: if set (sqapt only), write per-step schedule diagnostics
+        (phase,step_index,j_perp,chi_B,delta_j,eps_tilde,alpha,floor_hit) to this path,
+        consumable by scripts/plot_schedule_trajectory.py.
     """
     method = method.lower().strip()
     schedule_type = schedule_type.lower().strip()
@@ -415,7 +501,24 @@ def solve(problem: Any,
             ising, trotter_slices=trotter_slices)
         _opt_beta = float(optimal_beta) if optimal_beta is not None else _auto_beta
         _opt_j_perp_start = float(optimal_j_perp_start) if optimal_j_perp_start is not None else _auto_jps
-        _opt_j_perp_end = float(optimal_j_perp_end) if optimal_j_perp_end is not None else _auto_jpe
+
+        if optimal_j_perp_end is not None:
+            _opt_j_perp_end = float(optimal_j_perp_end)
+        else:
+            # Prefer a physically-motivated target tied to the coupling scale: the quantum
+            # critical J_perp ~ j_rms, so 5*j_rms sits well past the transition (Task 4.2).
+            # Fall back to the beta/gamma-derived value when couplings aren't inspectable.
+            _jrms = j_rms_from_problem(problem, n=n)
+            if _jrms is not None and _jrms > 0.0:
+                _opt_j_perp_end = max(_opt_j_perp_start, 5.0 * _jrms)
+                if _opt_j_perp_end <= _opt_j_perp_start:
+                    logger.warning(
+                        "optimal schedule: 5*j_rms=%.4g <= j_perp_start=%.4g; the system "
+                        "starts past criticality and the adaptive schedule has little range "
+                        "to traverse. Consider a problem with larger j_rms.",
+                        5.0 * _jrms, _opt_j_perp_start)
+            else:
+                _opt_j_perp_end = _auto_jpe
         _opt_num_steps = int(optimal_num_steps) if optimal_num_steps is not None else max(
             100, int(getattr(schedule, 'betas', [None] * 100).__len__()) if schedule is not None else 100
         )
@@ -429,6 +532,8 @@ def solve(problem: Any,
             annealer.set_seed(seed + int(r))
 
         if schedule_type == "optimal" and method == "sqa":
+            # eps_tilde <= 0 (the default) triggers budget calibration inside SQA run_optimal
+            # (ported from SQAPT); a positive value keeps the legacy online update.
             res = annealer.run_optimal(
                 beta=_opt_beta,
                 j_perp_start=_opt_j_perp_start,
@@ -439,9 +544,14 @@ def solve(problem: Any,
                 sweeps_per_step=sweeps_per_beta,
                 worldline_sweeps=worldline_sweeps,
                 cluster_sweeps=cluster_sweeps,
+                calib_probes=int(optimal_calib_probes),
+                calib_sweeps=int(optimal_calib_sweeps),
+                debug_csv_path=(optimal_debug_csv or ""),
+                beta_ramp_fraction=float(optimal_beta_ramp_fraction),
             )
             local_trace = list(getattr(res, "energy_trace", []))
         elif schedule_type == "optimal" and method == "sqapt":
+            # eps_tilde <= 0 (the default) triggers budget calibration inside run_optimal.
             res = annealer.run_optimal(
                 num_steps=_opt_num_steps,
                 sweeps_per_step=sweeps_per_beta,
@@ -452,6 +562,9 @@ def solve(problem: Any,
                 cluster_sweeps=cluster_sweeps,
                 swap_interval=swap_interval,
                 continuous_time_slices=continuous_time_slices,
+                calib_probes=int(optimal_calib_probes),
+                calib_sweeps=int(optimal_calib_sweeps),
+                debug_csv_path=(optimal_debug_csv or ""),
             )
             local_trace = list(getattr(res, "average_energy_trace", []))
         elif method == "sqa":

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(qanneal VERSION 0.4.0 LANGUAGES CXX)
+project(qanneal VERSION 0.4.1 LANGUAGES CXX)
 
 option(QANNEAL_ENABLE_OPENMP "Enable OpenMP" ON)
 option(QANNEAL_ENABLE_CUDA "Enable CUDA backend" OFF)
@@ -165,6 +165,14 @@ if(QANNEAL_BUILD_TESTS)
     add_executable(qanneal_sqapt_tests tests/test_sqa_parallel_tempering.cpp)
     target_link_libraries(qanneal_sqapt_tests PRIVATE qanneal_core)
     add_test(NAME qanneal_sqapt_tests COMMAND qanneal_sqapt_tests)
+
+    add_executable(qanneal_sqapt_optimal_tests tests/test_sqapt_optimal_schedule.cpp)
+    target_link_libraries(qanneal_sqapt_optimal_tests PRIVATE qanneal_core)
+    add_test(NAME qanneal_sqapt_optimal_tests COMMAND qanneal_sqapt_optimal_tests)
+
+    add_executable(qanneal_sqa_optimal_tests tests/test_sqa_optimal_schedule.cpp)
+    target_link_libraries(qanneal_sqa_optimal_tests PRIVATE qanneal_core)
+    add_test(NAME qanneal_sqa_optimal_tests COMMAND qanneal_sqa_optimal_tests)
 endif()
 
 install(TARGETS qanneal_core EXPORT qannealTargets

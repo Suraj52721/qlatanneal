@@ -5,8 +5,8 @@
 namespace qanneal {
 
 inline constexpr int version_major = 0;
-inline constexpr int version_minor = 4;
-inline constexpr int version_patch = 0;
+inline constexpr int version_minor = 6;
+inline constexpr int version_patch = 1;
 
 inline std::string version_string() {
     return std::to_string(version_major) + "." +

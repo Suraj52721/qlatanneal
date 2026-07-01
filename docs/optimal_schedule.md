@@ -54,8 +54,62 @@ At each adaptive step:
 1. Run `sweeps_per_step` + `worldline_sweeps` + `cluster_sweeps` sweeps.
 2. After each full sweep, record the current bond sum B (updated incrementally — no O(nM) recomputation).
 3. After all sweeps: `χ_B = Var({B samples from all sweeps × all replicas})`.
-4. `J_⊥ += ε̃ · χ_B^{-α}` (clamped to `j_perp_end`).
-5. Repeat until J_⊥ reaches `j_perp_end` or `num_steps` steps are exhausted.
+4. Advance J_⊥ (see **Budget calibration** below — SQAPT precomputes the whole trajectory; the
+   legacy fixed-`ε̃` path advances online by `J_⊥ += ε̃ · χ_B^{−α}`).
+5. Repeat for all `num_steps` steps (SQAPT no longer stops early — see termination notes).
+
+---
+
+## Budget calibration (SQAPT) — *the* fix for the frozen schedule
+
+> **Background / why this exists.** Before v0.4.2 the SQAPT optimal schedule used a hand-picked
+> constant `ε̃` (e.g. `0.05`, or `base_eps·max(1, j_rms)` in benchmark drivers). Nothing tied `ε̃`
+> to the step budget, so on problems where χ_B was large and roughly flat the per-step `ΔJ_⊥`
+> was ~0.002 and J_⊥ **barely moved over the entire run** (e.g. 2.88 → 3.14 over 150 steps when it
+> should have spanned 2.88 → 20.5). The schedule was effectively running at constant J_⊥ — *not
+> annealing* — which silently invalidated every `sqapt-opt` vs `sqapt-std` comparison. This is the
+> bug the calibration below removes.
+
+`ε̃` is only a **scale**; the *shape* of the schedule (slow where χ_B is large, fast where it is
+small) comes entirely from `χ_B(J)^{−α}`. The scale must be fixed by the step budget, not guessed.
+
+**Pilot pre-pass.** When `eps_tilde <= 0` (the default), `run_optimal` first measures the
+profile `χ_B(J)` at `calib_probes` points spanning `[j_perp_start, j_perp_end]` (`calib_sweeps`
+sweeps each, on scratch states so the real run is unbiased). The same sampler the run uses
+produces these probes.
+
+**Budget-correct ε̃.** From the discrete update `J_{t+1} = J_t + ε̃·χ_B(J_t)^{−α}`, the number of
+steps to cross the range is `T = (1/ε̃)·∫ χ_B(J)^{α} dJ`. Hence
+
+```
+ε̃  =  (1/T) · ∫_{J0}^{Jend} χ_B(J)^{α} dJ        (α POSITIVE; midpoint rule over the probes)
+```
+
+> ⚠️ **Note the +α and the /T.** The naive form `ε̃ = ΔJ⊥ / Σ_m χ_B(J_m)^{−α}` (χ_B to the
+> *negative* power, no `/T`) does **not** consume the budget when χ_B varies — it under/overshoots
+> and re-freezes. The integral form above is what makes the traversal budget-correct.
+
+**Profile-driven trajectory (robust to profile shape).** Rather than advance J_⊥ online with the
+noisy, path-dependent within-step variance (which lets the run order faster than the pilot, inflate
+`χ_B^{−α}`, and leap to the end in a few steps), the SQAPT run **precomputes the entire
+`J_⊥(step)` trajectory** by inverting the cumulative integral
+
+```
+G(J) = ∫_{J0}^{J} χ_B(J')^{α} dJ' ;   step t is placed at  J = G⁻¹( (t/(T−1)) · G(Jend) )
+```
+
+This guarantees, *by construction and independent of the χ_B shape*, that the schedule (a) consumes
+all `num_steps`, (b) reaches `j_perp_end`, and (c) dwells where χ_B is large. The online χ_B is
+still measured every step and recorded (`chi_B_online` in the debug CSV) as a diagnostic.
+
+**Per-instance, not global.** Because χ_B's scale depends on `n`, `M`, and the coupling
+distribution, `ε̃` is recalibrated for every run. A global hardcoded constant is fundamentally wrong.
+
+**Diagnostics.** `result.calibrated_eps_tilde`, `result.j_perp_start`, `result.resolved_j_perp_end`,
+`result.final_j_perp`, `result.j_perp_trace`, and `result.chi_B_trace` are populated. Pass
+`debug_csv_path=...` (Python: `optimal_debug_csv=...`) for a per-step CSV — see **Pre-flight check**.
+
+
 
 ### Why J_⊥ increases, not decreases
 
@@ -115,18 +169,32 @@ averaged over the full lattice. This provides a positive lower bound on χ_B nea
 
 ### `eps_tilde` (ε̃)
 
-The single most important tuning parameter. Controls the total "speed" of the annealing.
+The overall adiabaticity scale. **Default `0.0`, which requests budget calibration** (see
+*Budget calibration* above) — the recommended path for SQAPT. A **positive** value is treated as an
+explicit override that skips calibration and drives the schedule online with that fixed scale
+(legacy behavior; SQA `run_optimal` still requires `eps_tilde > 0` as it has no calibration).
 
-Rule of thumb: the total J_⊥ change per run is approximately `ε̃ · num_steps · χ̄_B^{-α}` where
-χ̄_B is the average susceptibility. To span a J_⊥ range of `jp_end − jp_start`:
+If you must set it by hand, the total J_⊥ change per run is approximately
+`ε̃ · num_steps · χ̄_B^{−α}` where χ̄_B is the average susceptibility; to span `jp_end − jp_start`:
 
 ```
-ε̃_target  ≈  (jp_end − jp_start) / (num_steps · χ̄_B^{-α})
+ε̃_target  ≈  (jp_end − jp_start) / (num_steps · χ̄_B^{−α})
 ```
 
-For most problems, χ̄_B ≈ nM/4 far from criticality (uncorrelated spins), giving a rough starting
-estimate. In practice, start with `eps_tilde=0.05` and adjust based on whether J_⊥ reaches
-`j_perp_end` within `num_steps`.
+Prefer calibration (`eps_tilde=0.0`) over this estimate — a frozen schedule from a too-small `ε̃`
+is exactly the bug calibration removes.
+
+### `calib_probes`, `calib_sweeps` (SQAPT)
+
+Pilot grid size and sweeps-per-probe for budget calibration. Defaults `12` and `10`. More probes
+sharpen the χ_B(J) profile (and thus the trajectory) at the cost of a short pre-pass.
+
+### `debug_csv_path` / `optimal_debug_csv` (SQAPT)
+
+Path for the per-step diagnostic CSV
+(`phase,step_index,j_perp,chi_B,delta_j,eps_tilde,alpha,floor_hit,chi_B_online`). `phase=calib`
+rows are the pilot probes (negative step index); `phase=run` rows are the realized schedule.
+Consumed by `scripts/plot_schedule_trajectory.py`.
 
 ### `alpha` (α)
 
@@ -141,12 +209,20 @@ class is unknown.
 
 ### `num_steps` and termination
 
-The run terminates at the **first** of:
-1. J_⊥ reaches `j_perp_end` (early termination — schedule completed).
-2. `num_steps` adaptive steps have been taken.
+The SQAPT optimal run **always executes all `num_steps`** (it does *not* stop early when J_⊥
+reaches `j_perp_end`; once saturated it keeps sweeping at the endpoint). This keeps the total sweep
+budget identical to the standard schedule — essential for a fair `opt`-vs-`std` comparison.
+`result.final_j_perp` reports the J_⊥ actually reached (≈ `resolved_j_perp_end` when calibrated).
 
-`result.j_perp_trace` records which case occurred: if the last value equals `j_perp_end`, the
-schedule finished early.
+### The χ_B floor (`min_chi_B`)
+
+`χ_B^{−α}` blows up where χ_B → 0, so a floor caps the step. **Empirically χ_B is *large* near the
+quantum transition and collapses toward 0 in the *ordered* phase — it does not diverge at
+criticality for this model** — so the largest steps (hence the floor's job) occur deep in the
+ordered phase, not at the critical peak. When calibrating, the floor is set relative to the *max*
+probed χ_B (`1e-4 · max χ_B`) rather than the old fixed `1e-4 · nM`, so it only bites where χ_B is
+genuinely tiny. `floor_hit` in the debug CSV records exactly where it activated — verify it is the
+ordered region, not the critical window.
 
 ---
 
@@ -172,6 +248,26 @@ You can also set them manually. Physical constraints:
 - `jp_end > jp_start` (schedule must move toward classical limit)
 - `jp_start` should correspond to Γ ≈ 1–5× the coupling scale so tunneling is active
 - `jp_end` should correspond to very small Γ so the system is nearly classical at the end
+
+### `j_perp_end` resolution and the silent-fallback footgun
+
+For SQAPT, `solve(...)` now resolves `j_perp_end` (when you don't pass `optimal_j_perp_end`) to a
+physically-motivated **`max(j_perp_start, 5·j_rms)`** where `j_rms = sqrt(mean J_ij²)` over the
+non-zero couplings (`qanneal.solver.j_rms_from_problem`). The quantum critical J_⊥ scales like
+`j_rms`, so `5·j_rms` sits well past the transition.
+
+The C++ `run_optimal` still accepts the `j_perp_end <= 0` **sentinel**, which defaults to the
+coldest replica's coupling. If that resolves *below* `j_perp_start`, the system starts past
+criticality and the schedule has no range to anneal; the code installs a finite fallback ceiling
+`j_perp_start + 1e6` **and now prints a `cerr` warning** (previously silent — that silence is how
+the original frozen-schedule bug went undetected). **For benchmark runs, always pass an explicit
+`j_perp_end` and only rely on the sentinel for genuinely undefined cases.**
+
+> **Key physics constraint (when does opt help at all?).** The schedule only has room to act when
+> `j_rms > j_perp_start (≈2.88)`. If `j_rms ≪ 2.88` (e.g. sparse 3-regular MWIS, SK at large n) the
+> system is already classical at the start, χ_B ≈ 0, and `opt` cannot beat `std`. wmaxcut
+> (`G(n,0.5)`, `J~U[1,10]`, `j_rms≈4–6`) is in the favorable regime. `scripts/sanity_schedule.py`
+> flags the degenerate classes as `DEGENERATE` rather than `PASS`.
 
 ---
 
@@ -215,9 +311,51 @@ plt.suptitle("Optimal schedule diagnostics"); plt.tight_layout(); plt.show()
 - J_⊥ reaches `jp_end` before `num_steps` is exhausted.
 
 **Warning signs**:
-- Flat `ΔJ_⊥` throughout → `eps_tilde` too large or `alpha` wrong; χ_B is dominated by floor.
+- Flat / linear `J_⊥(t)` (no dwell) → the frozen-schedule bug. With calibration this should not
+  happen; if it does, check that `j_perp_end > j_perp_start` (look for the `cerr` fallback warning).
 - `ΔJ_⊥` constant (no critical-point dip) → `replicas` or `sweeps_per_step` too small for reliable χ_B.
-- J_⊥ never reaches `jp_end` → increase `eps_tilde` or `num_steps`.
+- `final_j_perp` ≪ `resolved_j_perp_end` on a non-degenerate problem → calibration failed; inspect the CSV.
+
+---
+
+## Pre-flight check (mandatory before any large-n HPC job)
+
+Nothing in the pipeline used to visualize the realized `J_⊥(t)` curve, so the frozen schedule was
+only discovered after a multi-hour HPC run. **Before submitting any large-n benchmark job, run a
+fast sanity instance and inspect the trajectory.** A frozen/linear `J_⊥(t)` is the bug's signature
+— do not proceed if you see it.
+
+```bash
+# Generates mwis_3reg / wmaxcut / sk at n=40, checks each trajectory, writes CSVs + plots.
+python scripts/sanity_schedule.py --n 40 --steps 150 --plot
+# Or plot a single run's debug CSV:
+python scripts/plot_schedule_trajectory.py /tmp/sched_sanity/wmaxcut_n40.csv
+```
+
+A healthy trajectory visibly shows: (a) fast movement away from the critical region, (b) a
+pronounced slowdown/dwell near `J_⊥^c ≈ j_rms`, (c) fast movement again past the transition, and
+(d) actually reaching `j_perp_end` within the step budget. `sanity_schedule.py` prints `PASS` only
+when the run consumes the full budget, reaches the end, and front-loads its steps; it prints
+`DEGENERATE` for classes with no quantum range (`j_rms ≲ j_perp_start`) and exits non-zero on `FAIL`.
+
+---
+
+## Benchmark comparison: separating the schedule effect from cluster sweeps
+
+The adaptive *schedule* and Swendsen–Wang *cluster sweeps* are two independent mechanisms. To
+attribute a measured gain correctly, the comparison table must keep them separate:
+
+| Comparison | Cluster sweeps | Isolates |
+|------------|----------------|----------|
+| `sqapt-std` vs `sqapt-opt` | off (`cluster_sweeps=0`) | **the schedule effect alone** |
+| `sqapt-sw-std` vs `sqapt-sw-opt` | on (`cluster_sweeps>0`) | schedule + cluster-sweep interaction |
+
+**Attribution rule.** Only credit "the optimal schedule" if `sqapt-opt` beats `sqapt-std`
+(cluster sweeps OFF) reproducibly, now that the calibration fix is in place. If only the `-sw-`
+variants improve, the gain belongs to the schedule×cluster-sweep interaction, not the schedule in
+isolation, and the claim must be framed accordingly. (Pre-fix, the frozen schedule meant any
+`-sw-opt` gain was almost certainly cluster sweeps supplying more decorrelated χ_B samples at a
+near-constant J_⊥ — not the intended slow-near-criticality mechanism.)
 
 ---
 
@@ -235,13 +373,15 @@ problem = DenseIsing(np.zeros(n), J)
 # Standard schedule
 r_std = solve(problem, method="sqapt", replicas=8, reads=10, progress=False)
 
-# Optimal schedule
+# Optimal schedule with budget calibration (eps auto-calibrated; leave optimal_eps_tilde at 0.0)
 r_opt = solve(problem, method="sqapt", replicas=8, reads=10, progress=False,
-              schedule_type="optimal", optimal_eps_tilde=0.02, optimal_num_steps=300,
-              cluster_sweeps=1)
+              schedule_type="optimal", optimal_num_steps=150, cluster_sweeps=1,
+              optimal_debug_csv="/tmp/opt_sched.csv")
 
 print(f"Standard best energy: {r_std.best_energy:.4f}")
 print(f"Optimal  best energy: {r_opt.best_energy:.4f}")
+# Inspect the realized trajectory (pre-flight):
+#   python scripts/plot_schedule_trajectory.py /tmp/opt_sched.csv
 ```
 
 ---

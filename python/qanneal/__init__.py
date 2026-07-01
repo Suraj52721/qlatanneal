@@ -11,6 +11,7 @@ from .solver import (  # noqa: F401
     auto_ladder_sqa_tuned,
     j_perp_from_beta_gamma,
     optimal_j_perp_params,
+    j_rms_from_problem,
 )
 from .gui import launch_graph_editor  # noqa: F401
 
@@ -59,6 +60,7 @@ __all__ = [
     "auto_ladder_sqa_tuned",
     "j_perp_from_beta_gamma",
     "optimal_j_perp_params",
+    "j_rms_from_problem",
     "launch_graph_editor",
 ]
 

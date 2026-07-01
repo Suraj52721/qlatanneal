@@ -2,6 +2,7 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <cstring>
 #include <pybind11/stl.h>
 
 #include "qanneal/annealer.hpp"
@@ -92,6 +93,19 @@ PYBIND11_MODULE(_qanneal, m) {
             return qanneal::DenseIsing(std::move(hv), std::move(Jv), n, c);
         }), py::arg("h"), py::arg("J"), py::arg("c") = 0.0)
         .def("size", &qanneal::DenseIsing::size)
+        .def("couplings", [](const qanneal::DenseIsing &ham) {
+            const std::size_t n = ham.size();
+            const std::vector<double> &J = ham.J();
+            py::array_t<double> out({n, n});
+            std::memcpy(out.mutable_data(), J.data(), n * n * sizeof(double));
+            return out;
+        }, "Return the n x n coupling matrix J as a numpy array.")
+        .def("fields", [](const qanneal::DenseIsing &ham) {
+            const std::vector<double> &h = ham.h();
+            py::array_t<double> out(static_cast<py::ssize_t>(h.size()));
+            std::memcpy(out.mutable_data(), h.data(), h.size() * sizeof(double));
+            return out;
+        }, "Return the local fields h as a numpy array.")
         .def("energy", [](const qanneal::DenseIsing &ham, const py::sequence &spins) {
             auto data = seq_to_spins(spins);
             return ham.energy(data.data(), data.size());
@@ -333,7 +347,13 @@ PYBIND11_MODULE(_qanneal, m) {
         .def_readonly("best_state", &qanneal::SQAParallelTemperingResult::best_state)
         .def_readonly("best_energy", &qanneal::SQAParallelTemperingResult::best_energy)
         .def_readonly("average_energy_trace", &qanneal::SQAParallelTemperingResult::average_energy_trace)
-        .def_readonly("swap_acceptance_trace", &qanneal::SQAParallelTemperingResult::swap_acceptance_trace);
+        .def_readonly("swap_acceptance_trace", &qanneal::SQAParallelTemperingResult::swap_acceptance_trace)
+        .def_readonly("j_perp_trace", &qanneal::SQAParallelTemperingResult::j_perp_trace)
+        .def_readonly("chi_B_trace", &qanneal::SQAParallelTemperingResult::chi_B_trace)
+        .def_readonly("calibrated_eps_tilde", &qanneal::SQAParallelTemperingResult::calibrated_eps_tilde)
+        .def_readonly("j_perp_start", &qanneal::SQAParallelTemperingResult::j_perp_start)
+        .def_readonly("resolved_j_perp_end", &qanneal::SQAParallelTemperingResult::resolved_j_perp_end)
+        .def_readonly("final_j_perp", &qanneal::SQAParallelTemperingResult::final_j_perp);
 
     py::class_<qanneal::SQAParallelTemperingAnnealer>(m, "SQAParallelTemperingAnnealer")
         .def(py::init([](std::shared_ptr<qanneal::Hamiltonian> ham,
@@ -364,12 +384,15 @@ PYBIND11_MODULE(_qanneal, m) {
              py::arg("num_steps"),
              py::arg("sweeps_per_step"),
              py::arg("worldline_sweeps") = 0,
-             py::arg("eps_tilde") = 0.05,
+             py::arg("eps_tilde") = 0.0,
              py::arg("alpha") = 15.0 / 14.0,
              py::arg("j_perp_end") = 0.0,
              py::arg("cluster_sweeps") = 0,
              py::arg("swap_interval") = 1,
              py::arg("continuous_time_slices") = 0,
+             py::arg("calib_probes") = 12,
+             py::arg("calib_sweeps") = 10,
+             py::arg("debug_csv_path") = "",
              py::call_guard<py::gil_scoped_release>());
 
     py::class_<qanneal::SQASchedule>(m, "SQASchedule")
@@ -410,7 +433,12 @@ PYBIND11_MODULE(_qanneal, m) {
         .def_readonly("best_state", &qanneal::SQAResult::best_state)
         .def_readonly("best_energy", &qanneal::SQAResult::best_energy)
         .def_readonly("energy_trace", &qanneal::SQAResult::energy_trace)
-        .def_readonly("j_perp_trace", &qanneal::SQAResult::j_perp_trace);
+        .def_readonly("j_perp_trace", &qanneal::SQAResult::j_perp_trace)
+        .def_readonly("chi_B_trace", &qanneal::SQAResult::chi_B_trace)
+        .def_readonly("calibrated_eps_tilde", &qanneal::SQAResult::calibrated_eps_tilde)
+        .def_readonly("j_perp_start", &qanneal::SQAResult::j_perp_start)
+        .def_readonly("resolved_j_perp_end", &qanneal::SQAResult::resolved_j_perp_end)
+        .def_readonly("final_j_perp", &qanneal::SQAResult::final_j_perp);
 
     py::class_<qanneal::SQAAnnealer>(m, "SQAAnnealer")
         .def(py::init([](std::shared_ptr<qanneal::Hamiltonian> ham,
@@ -452,6 +480,11 @@ PYBIND11_MODULE(_qanneal, m) {
              py::arg("sweeps_per_step") = 20,
              py::arg("worldline_sweeps") = 0,
              py::arg("cluster_sweeps") = 0,
+             py::arg("calib_probes") = 12,
+             py::arg("calib_sweeps") = 10,
+             py::arg("debug_csv_path") = "",
+             py::arg("beta_ramp_fraction") = 0.3,
+             py::arg("beta_ramp_start") = 0.1,
              py::call_guard<py::gil_scoped_release>());
 
     py::class_<qanneal::CTPIMCResult>(m, "CTPIMCResult")
