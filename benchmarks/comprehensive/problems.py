@@ -98,8 +98,13 @@ def weighted_maxcut(n, rng):
     return J, np.zeros(n), None
 
 
-def rfim_2d(n_side, h_strength, rng):
-    """Random-Field Ising Model, 2D periodic square lattice. J_ij = +1; h_i ~ U(-h,+h)."""
+def rfim_2d(n_side, rng, h_strength=1.5):
+    """Random-Field Ising Model, 2D periodic square lattice. J_ij = +1 on all bonds (all-present,
+    so raw j_rms = 1.0 exactly); h_i ~ U(-h_strength, +h_strength), default 1.5 — near (but below)
+    the 2D RFIM's zero-temperature ordering field h_c ~ J*sqrt(z) ~ 2.0 (z=4 coordination):
+    genuinely frustrated by domain competition, not deep in either the ferromagnetic (h too weak,
+    trivially orders) or paramagnetic (h too strong, trivially disordered) limit. v8 fix: h=0.5
+    was too weak (deep ferromagnet, trivially easy)."""
     n = n_side ** 2
     J = np.zeros((n, n))
     for i in range(n_side):
@@ -113,25 +118,42 @@ def rfim_2d(n_side, h_strength, rng):
     return J, h, None
 
 
-def planted_partition(n, rng, p_in=0.7, p_out=0.3, J_in=-2.0, J_out=1.0):
-    """Planted bisection. Within-community bonds J_in (prob p_in); cross J_out (prob p_out).
-    Signs follow qanneal's minimise-E = +sum J s s convention: J_in < 0 (ferromagnetic within
-    community, same spin lowers energy) and J_out > 0 (antiferromagnetic across communities,
-    opposite spins lower energy). The planted bisection then satisfies every bond simultaneously,
-    so it IS the ground state; gs_energy is computed exactly (sum_{i<j} convention)."""
+def planted_partition(n, rng, p_in=0.55, p_out=0.45, J_strength=1.0):
+    """Planted bisection near the (dense) detectability boundary. v8 fix: p_in=0.7/p_out=0.3 gave
+    an overwhelming planted signal (every solver trivially recovers it, sp=1.0 everywhere);
+    p_in=0.55/p_out=0.45 is a much weaker signal-to-noise gap, making recovery genuinely harder.
+
+    Sign convention (qanneal minimises E = sum_i h_i s_i + sum_{i<j} J_ij s_i s_j): within-community
+    bonds must be NEGATIVE (ferromagnetic — aligned spins lower energy) and cross-community bonds
+    POSITIVE (antiferromagnetic — opposite spins lower energy) for the planted bisection itself to
+    be the argmin. This is the opposite sign of what a naive "J_in=+, J_out=-" labelling suggests;
+    get it backwards and the "ground state" you compute is not actually the minimum (verified by
+    brute force in tests/ — see check_planted_is_ground_state below)."""
     assert n % 2 == 0
     community = np.array([0] * (n // 2) + [1] * (n // 2))
-    gs_spin = np.where(community == 0, 1, -1).astype(np.int64)
+    gs_spin = np.where(community == 0, 1.0, -1.0)
     J = np.zeros((n, n))
     for i in range(n):
         for j in range(i + 1, n):
             same = community[i] == community[j]
-            if same and rng.random() < p_in:
-                J[i, j] = J[j, i] = J_in
-            elif (not same) and rng.random() < p_out:
-                J[i, j] = J[j, i] = J_out
+            prob = p_in if same else p_out
+            if rng.random() < prob:
+                sign = -1.0 if same else 1.0   # same->ferro(-), cross->antiferro(+)
+                J[i, j] = J[j, i] = sign * J_strength
     h = np.zeros(n)
-    return J, h, _ising_energy(J, h, gs_spin.astype(float))
+    return J, h, _ising_energy(J, h, gs_spin)
+
+
+def check_planted_is_ground_state(n=16, seed=0):
+    """Brute-force verification that the planted bisection is truly the argmin (sanity check to
+    run locally before any HPC submission — catches sign-convention bugs)."""
+    rng = np.random.default_rng(seed)
+    J, h, gs_claimed = planted_partition(n, rng)
+    best = np.inf
+    for bits in range(2 ** n):
+        s = np.array([(1.0 if (bits >> k) & 1 else -1.0) for k in range(n)])
+        best = min(best, _ising_energy(J, h, s))
+    return gs_claimed, best, abs(gs_claimed - best) < 1e-9
 
 
 def number_partitioning(n, rng, max_val=10 ** 6):

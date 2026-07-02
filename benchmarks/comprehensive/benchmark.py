@@ -72,12 +72,19 @@ PROBLEMS = [
      "n_values": [27, 64, 125, 216], "gs_threshold": 0.01},
     {"name": "w3reg",   "gen": lambda n, r: random_3regular_maxcut(n, r),
      "n_values": [32, 64, 128, 256, 512], "gs_threshold": 0.01},
-    {"name": "wmaxcut", "gen": lambda n, r: weighted_maxcut(n, r),
-     "n_values": [32, 64, 128, 256], "gs_threshold": 0.01},
-    {"name": "rfim2d",  "gen": lambda n, r: rfim_2d(int(round(np.sqrt(n))), 0.5, r),
+    # v8: no_rescale=True -- weighted_maxcut's natural coupling scale (j_rms ~ 6, from
+    # w~U[1,10] over present edges) is already well above j_perp_start (~2.9), so the adaptive
+    # schedule has room to act without rescaling; rescaling to a fixed TARGET_JRMS was flattening
+    # the problem into an easy, greedy regime (see benchmarks/comprehensive/README notes).
+    {"name": "wmaxcut", "gen": lambda n, r: weighted_maxcut(n, r), "no_rescale": True,
+     "n_values": [64, 128, 256, 512], "gs_threshold": 0.01},
+    # v8: h_strength=1.5 (near the 2D RFIM's h_c~2J), was 0.5 (too weak, trivially ferromagnetic).
+    {"name": "rfim2d",  "gen": lambda n, r: rfim_2d(int(round(np.sqrt(n))), r),
      "n_values": [36, 64, 100, 144, 196], "gs_threshold": 0.01},
+    # v8: p_in=0.55/p_out=0.45 (near the dense detectability boundary), was 0.7/0.3 (trivially
+    # recoverable, sp=1.0 everywhere). Sign convention re-verified by brute force (problems.py).
     {"name": "planted", "gen": lambda n, r: planted_partition(n, r),
-     "n_values": [32, 64, 128, 256], "gs_threshold": 0.001},
+     "n_values": [64, 128, 256, 512], "gs_threshold": 0.001},
     {"name": "numpart", "gen": lambda n, r: number_partitioning(n, r),
      "n_values": [16, 24, 32, 48], "gs_threshold": 0.001},
 ]
@@ -179,7 +186,8 @@ def main():
         try:
             rng = np.random.default_rng(seed)
             J, h, gs = prob["gen"](n, rng)
-            J, h, gs = rescale_to_jrms(J, h, gs)
+            if not prob.get("no_rescale", False):
+                J, h, gs = rescale_to_jrms(J, h, gs)
             ham = DenseIsing(np.ascontiguousarray(h, dtype=float),
                              np.ascontiguousarray(J, dtype=float))
             n_act = J.shape[0]

@@ -34,16 +34,49 @@ plt.rcParams.update({
 })
 
 
+SUCCESS_THRESHOLD = 0.01
+
+
 def load_data(path):
+    """Load the benchmark CSV and add FAIR cross-solver metrics.
+
+    The raw `energy_gap`/`success` columns (written by benchmark.py) are self-referential for
+    problems without a known ground state: each solver's gap is measured against its OWN best
+    read, so solver A and solver B are compared against different references -- not usable for
+    cross-solver TTS/success-prob comparison. Fix: for every (problem, n, instance), find the
+    best energy across ALL FOUR solvers (`best_known`) and measure every solver's gap against
+    that single shared reference. For problems WITH a known gs_energy, best_known == gs_energy
+    (the true optimum is always <= any solver's best, so min(best_energy) over solvers converges
+    to gs_energy whenever at least one solver/read finds it -- and gs_energy is a lower bound by
+    construction, so it never OVER-estimates hardness); those columns were already fair.
+    """
     df = pd.read_csv(path)
     df["gs_energy"] = pd.to_numeric(df["gs_energy"], errors="coerce")
     for c in ["best_energy", "mean_energy", "energy_gap", "wall_seconds", "success", "n"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Cross-solver reference: best energy found by ANY solver for this (problem, n, instance).
+    # When gs_energy is known, take the elementwise min with it too -- gs_energy is a guaranteed
+    # true lower bound, so this can only tighten (never loosen) the reference versus the raw
+    # empirical minimum, which matters if some instance is so hard that no solver/read ever
+    # actually reaches the true optimum.
+    df["best_known"] = df.groupby(["problem", "n", "instance"])["best_energy"].transform("min")
+    has_gs = df["gs_energy"].notna()
+    df.loc[has_gs, "best_known"] = np.minimum(df.loc[has_gs, "best_known"], df.loc[has_gs, "gs_energy"])
+
+    df["gap_fair"] = (df["best_energy"] - df["best_known"]).abs() / (df["best_known"].abs() + 1e-12)
+    df["success_fair"] = (df["gap_fair"] <= SUCCESS_THRESHOLD).astype(int)
     return df
 
 
-def tts(sp, confidence=0.99):
-    sp = np.clip(sp, 1e-9, 1 - 1e-9)
+def tts(sp, confidence=0.99, n_trials=None):
+    """TTS = log(1-confidence)/log(1-sp). sp is floored before the log so a solver that
+    genuinely had ZERO successes doesn't blow the axis up to ~1e9 (log(1e-9) territory) -- with
+    n_trials observed reads and 0 successes, the true rate can't be pinned below ~1/n_trials
+    (rule-of-three-style), so floor at 1/n_trials rather than an arbitrary tiny constant. Falls
+    back to 1e-4 (TTS ~ 4.6e4, still finite/plottable) if n_trials isn't supplied."""
+    floor = 1.0 / n_trials if n_trials else 1e-4
+    sp = np.clip(sp, floor, 1 - 1e-9)
     return np.log(1 - confidence) / np.log(1 - sp)
 
 
@@ -77,7 +110,10 @@ def plot_metric_vs_n(df, problem, metric, ylabel, outpath, log_y=False):
 
 
 def plot_success_prob_vs_n(df, problem, outpath):
-    sub = df[(df["problem"] == problem) & (df["success"] >= 0)]
+    """Fair cross-solver success probability: success_fair is 1 iff a solver's best_energy is
+    within SUCCESS_THRESHOLD of best_known (the best ANY solver found for that instance), so all
+    four solvers share the same reference -- unlike the raw `success` column (self-referential)."""
+    sub = df[df["problem"] == problem]
     if sub.empty:
         return
     fig, ax = plt.subplots(figsize=(6, 4.5))
@@ -86,18 +122,18 @@ def plot_success_prob_vs_n(df, problem, outpath):
         if s.empty:
             continue
         ns = sorted(s["n"].unique())
-        sps = [s[s["n"] == n]["success"].mean() for n in ns]
+        sps = [s[s["n"] == n]["success_fair"].mean() for n in ns]
         errs = [np.sqrt(max(sp * (1 - sp), 0) / max(len(s[s["n"] == n]), 1))
                 for n, sp in zip(ns, sps)]
         _line(ax, ns, sps, errs, style)
-    ax.set_xlabel("Problem size $n$"); ax.set_ylabel("Success probability")
+    ax.set_xlabel("Problem size $n$"); ax.set_ylabel("Success probability (fair, cross-solver)")
     ax.set_title(PROBLEM_LABELS.get(problem, problem)); ax.set_ylim(-0.05, 1.05)
     ax.legend(framealpha=0.9); fig.tight_layout()
     fig.savefig(outpath, bbox_inches="tight"); plt.close(fig)
 
 
 def plot_tts_vs_n(df, problem, outpath):
-    sub = df[(df["problem"] == problem) & (df["success"] >= 0)]
+    sub = df[df["problem"] == problem]
     if sub.empty:
         return
     fig, ax = plt.subplots(figsize=(6, 4.5))
@@ -106,9 +142,10 @@ def plot_tts_vs_n(df, problem, outpath):
         if s.empty:
             continue
         ns = sorted(s["n"].unique())
-        ttss = [tts(s[s["n"] == n]["success"].mean()) for n in ns]
+        ttss = [tts(s[s["n"] == n]["success_fair"].mean(), n_trials=len(s[s["n"] == n]))
+                for n in ns]
         _line(ax, ns, ttss, None, style)
-    ax.set_xlabel("Problem size $n$"); ax.set_ylabel("TTS (reads, 99% confidence)")
+    ax.set_xlabel("Problem size $n$"); ax.set_ylabel("TTS (reads, 99% confidence, fair)")
     ax.set_title(PROBLEM_LABELS.get(problem, problem)); ax.set_yscale("log")
     ax.legend(framealpha=0.9); fig.tight_layout()
     fig.savefig(outpath, bbox_inches="tight"); plt.close(fig)
@@ -121,14 +158,15 @@ def plot_gap_cdf(df, problem, outpath):
     sub = sub[sub["n"] == sub["n"].max()]
     fig, ax = plt.subplots(figsize=(6, 4.5))
     for solver, style in SOLVER_STYLE.items():
-        s = sub[sub["solver"] == solver]["energy_gap"].dropna().values
+        s = sub[sub["solver"] == solver]["gap_fair"].dropna().values
         s = s[s > 0]
         if len(s) == 0:
             continue
         s.sort()
         ax.plot(s, np.arange(1, len(s) + 1) / len(s), color=style["color"],
                 ls=style["ls"], label=style["label"], linewidth=1.8)
-    ax.set_xlabel(r"Relative energy gap $|E-E_{\rm ref}|/|E_{\rm ref}|$"); ax.set_ylabel("CDF")
+    ax.set_xlabel(r"Relative energy gap $|E-E_{\rm best\ known}|/|E_{\rm best\ known}|$ (fair)")
+    ax.set_ylabel("CDF")
     ax.set_title(f"{PROBLEM_LABELS.get(problem, problem)} (n={int(sub['n'].max())})")
     ax.set_xscale("log"); ax.legend(framealpha=0.9); fig.tight_layout()
     fig.savefig(outpath, bbox_inches="tight"); plt.close(fig)
@@ -169,15 +207,15 @@ def plot_heatmaps(df, outdir):
         sub = sub[sub["n"] == sub["n"].max()]
         for j, solver in enumerate(solvers):
             s = sub[sub["solver"] == solver]
-            spv = s[s["success"] >= 0]["success"].values
-            gv = s["energy_gap"].dropna().values
+            spv = s["success_fair"].values
+            gv = s["gap_fair"].dropna().values
             if len(spv):
                 sp_m[i, j] = spv.mean()
             if len(gv):
                 gap_m[i, j] = gv.mean()
     for matrix, label, fname, cmap, fmt, vmax in [
-        (sp_m, "Mean success probability (largest n)", "heatmap_success.pdf", "YlGn", ".2f", 1.0),
-        (gap_m, "Mean relative energy gap (largest n)", "heatmap_gap.pdf", "YlOrRd", ".3f", None),
+        (sp_m, "Mean success probability, fair (largest n)", "heatmap_success.pdf", "YlGn", ".2f", 1.0),
+        (gap_m, "Mean relative energy gap, fair (largest n)", "heatmap_gap.pdf", "YlOrRd", ".3f", None),
     ]:
         fig, ax = plt.subplots(figsize=(8, 5))
         im = ax.imshow(matrix, cmap=cmap, aspect="auto", vmin=0, vmax=vmax)
@@ -193,6 +231,46 @@ def plot_heatmaps(df, outdir):
         plt.colorbar(im, ax=ax, label=label); ax.set_title(label)
         fig.tight_layout(); fig.savefig(os.path.join(outdir, fname), bbox_inches="tight")
         plt.close(fig)
+
+
+def plot_sqa_vs_sqapt_walltime(df, problem, outpath):
+    """SQA-std vs SQAPT-std: mean best_energy vs mean wall_seconds per instance, at the largest n.
+
+    Distinguishes a genuine SQA advantage from a sweep-budget-allocation artifact: SQAPT spreads
+    the same total sweep budget across REPLICAS_SQAPT=8 replicas, so its cold (answer-producing)
+    replica gets ~1/8 the sweeps SQA's single chain gets, at ~8x the wall time. If SQAPT-std's
+    cloud sits at strictly higher wall time AND worse (higher) energy than SQA-std with no
+    overlap, SQA is winning on both axes simultaneously -- not explained by budget alone. If
+    SQAPT's cloud would reach SQA's energy by extrapolating to even higher wall time, the
+    advantage is (at least partly) a budget-allocation effect, not a fundamial SQAPT weakness.
+    """
+    sub = df[df["problem"] == problem]
+    if sub.empty:
+        return
+    largest_n = sub["n"].max()
+    sub = sub[sub["n"] == largest_n]
+
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    for solver in ["sqa-std", "sqapt-std"]:
+        style = SOLVER_STYLE[solver]
+        s = sub[sub["solver"] == solver]
+        if s.empty:
+            continue
+        inst_means = s.groupby("instance").agg(
+            mean_energy=("best_energy", "mean"), mean_wall=("wall_seconds", "mean"))
+        ax.scatter(inst_means["mean_wall"], inst_means["mean_energy"], color=style["color"],
+                  marker=style["marker"], label=style["label"], alpha=0.7, s=40)
+        ax.axhline(inst_means["mean_energy"].mean(), color=style["color"], ls=":",
+                  alpha=0.5, linewidth=1.2)
+
+    ax.set_xlabel("Mean wall time per read (s)")
+    ax.set_ylabel("Mean best energy per read")
+    ax.set_title(f"{PROBLEM_LABELS.get(problem, problem)} (n={int(largest_n)})\n"
+                "SQA-std vs SQAPT-std: energy vs wall time")
+    ax.legend(framealpha=0.9)
+    fig.tight_layout()
+    fig.savefig(outpath, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main():
@@ -215,6 +293,10 @@ def main():
         plot_gap_cdf(df, prob, os.path.join(args.outdir, f"{slug}_gap_cdf.pdf"))
         plot_violin(df, prob, os.path.join(args.outdir, f"{slug}_violin.pdf"))
     plot_heatmaps(df, args.outdir)
+    for prob in ["sk", "ea3d", "w3reg"]:
+        if prob in df["problem"].unique():
+            plot_sqa_vs_sqapt_walltime(df, prob,
+                os.path.join(args.outdir, f"{prob}_walltime_sqa_vs_sqapt.pdf"))
     print(f"Plots -> {args.outdir}")
     print(f"Problems: {df['problem'].unique().tolist()}")
     print(f"Solvers:  {df['solver'].unique().tolist()}  |  rows: {len(df)}")
