@@ -17,6 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 SOLVER_STYLE = {
+    "sa-std":    {"color": "#555555", "marker": "x", "ls": ":",  "label": "SA (classical baseline)"},
     "sqa-std":   {"color": "#2166ac", "marker": "o", "ls": "-",  "label": "SQA std"},
     "sqa-opt":   {"color": "#d6604d", "marker": "s", "ls": "--", "label": "SQA opt"},
     "sqapt-std": {"color": "#4dac26", "marker": "^", "ls": "-",  "label": "SQAPT std"},

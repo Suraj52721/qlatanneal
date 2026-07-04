@@ -1,12 +1,15 @@
 """
 benchmark.py — MPI-parallel comprehensive benchmark driver (qanneal optimal schedule).
 
-Compares 4 solvers on 7 problem classes:
+Compares 5 solvers on 7 problem classes:
+    sa-std     Classical SA baseline (single chain, fixed beta ramp) -- the "true energy"
+               reference: cheapest/simplest method, folds into the cross-solver best_known
+               reference (analyze.py) alongside the 4 quantum methods below.
     sqa-std    SQA, standard coupled (beta, Gamma) ladder of length num_steps
     sqa-opt    SQA, adaptive J_perp schedule (two-phase, budget-calibrated)
     sqapt-std  SQAPT, standard schedule (pt_steps = num_steps)
     sqapt-opt  SQAPT, adaptive J_perp schedule (budget-calibrated)
-All four use the SAME sweep budget (num_steps * sweeps_per_step) for a fair comparison.
+All five use the SAME sweep budget (num_steps * sweeps_per_step) for a fair comparison.
 
 Robust MPI design (no send/recv, deadlock-free): each rank owns a disjoint slice of the
 (problem, n, instance) work list and writes its own CSV part file, flushing after every
@@ -24,7 +27,7 @@ import numpy as np
 from mpi4py import MPI
 
 import qanneal
-from qanneal import DenseIsing, solve, auto_schedule_sqa
+from qanneal import DenseIsing, solve, auto_schedule_sqa, auto_schedule_sa
 from problems import (
     sk_spin_glass, ea3d_spin_glass, random_3regular_maxcut,
     weighted_maxcut, rfim_2d, planted_partition, number_partitioning,
@@ -44,7 +47,7 @@ M_TROTTER   = 32
 REPLICAS_SQA   = 4
 REPLICAS_SQAPT = 8
 
-SOLVERS = ["sqa-std", "sqa-opt", "sqapt-std", "sqapt-opt"]
+SOLVERS = ["sa-std", "sqa-std", "sqa-opt", "sqapt-std", "sqapt-opt"]
 
 # Put every instance at a common coupling scale so the optimal J_perp schedule has a quantum
 # transition to navigate (the raw problems span j_rms ~ 0.1 to 16; below ~2.9 the SQAPT ladder's
@@ -101,7 +104,14 @@ def run_solver(solver, ham, seed):
     common = dict(reads=N_READS, sweeps_per_beta=N_SWEEPS, trotter_slices=M_TROTTER,
                   worldline_sweeps=WORLDLINE, progress=False, seed=seed)
     t0 = time.perf_counter()
-    if solver == "sqa-std":
+    if solver == "sa-std":
+        # Classical SA baseline -- same total sweep budget (N_STEPS*N_SWEEPS) as the other
+        # "-std" solvers, same naive fixed beta range (0.1->4.0, no j_rms awareness) as
+        # sqa-std's auto_schedule_sqa, for a like-for-like comparison. No trotter_slices/
+        # replicas/worldline_sweeps -- SA is a single classical chain; solve() ignores the
+        # irrelevant entries in `common` for this method.
+        r = solve(ham, method="sa", schedule=auto_schedule_sa(steps=N_STEPS), **common)
+    elif solver == "sqa-std":
         r = solve(ham, method="sqa", schedule_type="standard",
                   schedule=auto_schedule_sqa(steps=N_STEPS),
                   replicas=REPLICAS_SQA, **common)
@@ -134,7 +144,7 @@ def build_work_list():
 
 
 def main():
-    global N_INSTANCES, N_READS, N_SWEEPS, N_STEPS, PROBLEMS
+    global N_INSTANCES, N_READS, N_SWEEPS, N_STEPS, PROBLEMS, SOLVERS
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default="results")
     ap.add_argument("--tag", default="run")
@@ -144,6 +154,7 @@ def main():
     ap.add_argument("--sweeps", type=int, default=N_SWEEPS)
     ap.add_argument("--steps", type=int, default=N_STEPS)
     ap.add_argument("--problems", nargs="+", default=None, help="subset of problem names")
+    ap.add_argument("--solvers", nargs="+", default=None, help="subset of solver names")
     ap.add_argument("--max-n", type=int, default=None, help="cap problem sizes (for smoke tests)")
     args = ap.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -151,6 +162,8 @@ def main():
     N_INSTANCES, N_READS, N_SWEEPS, N_STEPS = args.instances, args.reads, args.sweeps, args.steps
     if args.problems:
         PROBLEMS = [p for p in PROBLEMS if p["name"] in args.problems]
+    if args.solvers:
+        SOLVERS = [s for s in SOLVERS if s in args.solvers]
     if args.max_n is not None:
         for p in PROBLEMS:
             p["n_values"] = [n for n in p["n_values"] if n <= args.max_n] or [min(p["n_values"])]
