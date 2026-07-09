@@ -398,15 +398,36 @@ def solve(problem: Any,
           optimal_calib_probes: int = 12,
           optimal_calib_sweeps: int = 10,
           optimal_beta_ramp_fraction: float = 0.3,
-          optimal_debug_csv: Optional[str] = None) -> SolveResult:
+          optimal_debug_csv: Optional[str] = None,
+          surrogate_gamma_start: Optional[float] = None,
+          surrogate_gamma_end: Optional[float] = None,
+          surrogate_scan_points: int = 16,
+          surrogate_scan_sweeps: int = 30,
+          surrogate_scan_burn: int = 10,
+          surrogate_chi0_fraction: float = 0.05,
+          surrogate_driver_A0: float = 0.0) -> SolveResult:
     """
     Solve a problem using SA, SQA, SQA parallel tempering, or CT-PIMC.
 
     method: "sa", "sqa", "sqapt", or "ctpimc"
-    schedule_type: "standard" (default) or "optimal"
+    schedule_type: "standard" (default), "optimal", or "surrogate"
         "optimal" uses the local adiabaticity ODE from the Roland-Cerf SQA derivation:
         dJ_perp/dt = eps_tilde * chi_B^(-alpha), where chi_B = Var(B) across replicas.
         Supported for methods "sqa" and "sqapt" (including SQAPT+SW via cluster_sweeps > 0).
+        "surrogate" (method "sqa" only) uses the bond-susceptibility surrogate schedule:
+        a pilot SQA scan measures chi_B(s) on a uniform grid of the annealing parameter
+        s = A0/(A0+gamma), then the time budget is allocated with weight
+        w(s) = chi_B(s) + chi_0 via tau(s) = int w / int w (the paper's Roland-Cerf
+        surrogate), and a fresh standard SQA anneal runs along gamma(t) = A0(1-s)/s at
+        fixed beta. Shares optimal_beta / optimal_num_steps / optimal_beta_ramp_fraction /
+        optimal_debug_csv with the "optimal" path.
+    surrogate_gamma_start / surrogate_gamma_end: transverse-field range for the surrogate
+        path (default: max/min gamma of the resolved SQA schedule).
+    surrogate_scan_points / surrogate_scan_sweeps / surrogate_scan_burn: pilot chi_B scan
+        grid size, measurement sweeps, and burn-in sweeps per grid point.
+    surrogate_chi0_fraction: regularization chi_0 = fraction * max(chi_B) that keeps the
+        annealing velocity finite away from the chi_B peak.
+    surrogate_driver_A0: driver scale A0 in s = A0/(A0+gamma); <= 0 uses gamma_start.
     optimal_eps_tilde: adiabaticity parameter epsilon-tilde. Default 0.0 requests budget
         calibration (a short pilot pre-pass picks eps_tilde so the schedule traverses the
         full [j_perp_start, j_perp_end] range within optimal_num_steps). Pass a positive
@@ -426,8 +447,10 @@ def solve(problem: Any,
     schedule_type = schedule_type.lower().strip()
     if method not in ("sa", "sqa", "sqapt", "ctpimc"):
         raise ValueError("method must be 'sa', 'sqa', 'sqapt', or 'ctpimc'")
-    if schedule_type not in ("standard", "optimal"):
-        raise ValueError("schedule_type must be 'standard' or 'optimal'")
+    if schedule_type not in ("standard", "optimal", "surrogate"):
+        raise ValueError("schedule_type must be 'standard', 'optimal', or 'surrogate'")
+    if schedule_type == "surrogate" and method != "sqa":
+        raise ValueError("schedule_type='surrogate' is only supported for method 'sqa'.")
 
     if logger is None:
         logger = logging.getLogger("qanneal.solve")
@@ -523,6 +546,36 @@ def solve(problem: Any,
             100, int(getattr(schedule, 'betas', [None] * 100).__len__()) if schedule is not None else 100
         )
 
+    # --- Pre-compute surrogate schedule parameters (done once, outside the reads loop) ---
+    _sur_beta: float = 0.0
+    _sur_gamma_start: float = 0.0
+    _sur_gamma_end: float = 0.0
+    _sur_num_steps: int = 100
+    if schedule_type == "surrogate":
+        _auto_beta, _, _ = optimal_j_perp_params(ising, trotter_slices=trotter_slices)
+        _sur_beta = float(optimal_beta) if optimal_beta is not None else _auto_beta
+        _sched_gammas = list(getattr(schedule, "gammas", []) or [])
+        if surrogate_gamma_start is not None:
+            _sur_gamma_start = float(surrogate_gamma_start)
+        elif _sched_gammas:
+            _sur_gamma_start = float(max(_sched_gammas))
+        else:
+            _sur_gamma_start = 5.0
+        if surrogate_gamma_end is not None:
+            _sur_gamma_end = float(surrogate_gamma_end)
+        elif _sched_gammas:
+            _sur_gamma_end = float(min(_sched_gammas))
+        else:
+            _sur_gamma_end = 0.01
+        if not (_sur_gamma_start > _sur_gamma_end > 0.0):
+            raise ValueError(
+                "surrogate schedule requires gamma_start > gamma_end > 0 "
+                f"(got {_sur_gamma_start} and {_sur_gamma_end})."
+            )
+        _sur_num_steps = int(optimal_num_steps) if optimal_num_steps is not None else max(
+            100, len(_sched_gammas) if _sched_gammas else 100
+        )
+
     samples: List[np.ndarray] = []
     energies: List[float] = []
     trace: Optional[List[float]] = None
@@ -548,6 +601,26 @@ def solve(problem: Any,
                 calib_sweeps=int(optimal_calib_sweeps),
                 debug_csv_path=(optimal_debug_csv or ""),
                 beta_ramp_fraction=float(optimal_beta_ramp_fraction),
+            )
+            local_trace = list(getattr(res, "energy_trace", []))
+        elif schedule_type == "surrogate" and method == "sqa":
+            # Bond-susceptibility surrogate: pilot chi_B(s) scan -> cumulative
+            # chi_B-weighted time allocation -> fresh standard SQA anneal.
+            res = annealer.run_surrogate(
+                beta=_sur_beta,
+                gamma_start=_sur_gamma_start,
+                gamma_end=_sur_gamma_end,
+                num_steps=_sur_num_steps,
+                sweeps_per_step=sweeps_per_beta,
+                worldline_sweeps=worldline_sweeps,
+                cluster_sweeps=cluster_sweeps,
+                scan_points=int(surrogate_scan_points),
+                scan_sweeps=int(surrogate_scan_sweeps),
+                scan_burn=int(surrogate_scan_burn),
+                chi0_fraction=float(surrogate_chi0_fraction),
+                driver_A0=float(surrogate_driver_A0),
+                beta_ramp_fraction=float(optimal_beta_ramp_fraction),
+                debug_csv_path=(optimal_debug_csv or ""),
             )
             local_trace = list(getattr(res, "energy_trace", []))
         elif schedule_type == "optimal" and method == "sqapt":

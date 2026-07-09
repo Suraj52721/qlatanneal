@@ -440,6 +440,22 @@ PYBIND11_MODULE(_qanneal, m) {
         .def_readonly("resolved_j_perp_end", &qanneal::SQAResult::resolved_j_perp_end)
         .def_readonly("final_j_perp", &qanneal::SQAResult::final_j_perp);
 
+    py::class_<qanneal::SQASurrogateResult>(m, "SQASurrogateResult")
+        .def_readonly("best_state", &qanneal::SQASurrogateResult::best_state)
+        .def_readonly("best_energy", &qanneal::SQASurrogateResult::best_energy)
+        .def_readonly("energy_trace", &qanneal::SQASurrogateResult::energy_trace)
+        .def_readonly("beta_schedule", &qanneal::SQASurrogateResult::beta_schedule)
+        .def_readonly("gamma_schedule", &qanneal::SQASurrogateResult::gamma_schedule)
+        .def_readonly("s_schedule", &qanneal::SQASurrogateResult::s_schedule)
+        .def_readonly("scan_s", &qanneal::SQASurrogateResult::scan_s)
+        .def_readonly("scan_gamma", &qanneal::SQASurrogateResult::scan_gamma)
+        .def_readonly("scan_chi_B", &qanneal::SQASurrogateResult::scan_chi_B)
+        .def_readonly("s_star", &qanneal::SQASurrogateResult::s_star)
+        .def_readonly("gamma_star", &qanneal::SQASurrogateResult::gamma_star)
+        .def_readonly("j_perp_star", &qanneal::SQASurrogateResult::j_perp_star)
+        .def_readonly("chi0", &qanneal::SQASurrogateResult::chi0)
+        .def_readonly("driver_A0", &qanneal::SQASurrogateResult::driver_A0);
+
     py::class_<qanneal::SQAAnnealer>(m, "SQAAnnealer")
         .def(py::init([](std::shared_ptr<qanneal::Hamiltonian> ham,
                          qanneal::SQASchedule schedule,
@@ -485,6 +501,23 @@ PYBIND11_MODULE(_qanneal, m) {
              py::arg("debug_csv_path") = "",
              py::arg("beta_ramp_fraction") = 0.3,
              py::arg("beta_ramp_start") = 0.1,
+             py::call_guard<py::gil_scoped_release>())
+        .def("run_surrogate", &qanneal::SQAAnnealer::run_surrogate,
+             py::arg("beta"),
+             py::arg("gamma_start"),
+             py::arg("gamma_end"),
+             py::arg("num_steps") = 100,
+             py::arg("sweeps_per_step") = 20,
+             py::arg("worldline_sweeps") = 0,
+             py::arg("cluster_sweeps") = 0,
+             py::arg("scan_points") = 16,
+             py::arg("scan_sweeps") = 30,
+             py::arg("scan_burn") = 10,
+             py::arg("chi0_fraction") = 0.05,
+             py::arg("driver_A0") = 0.0,
+             py::arg("beta_ramp_fraction") = 0.3,
+             py::arg("beta_ramp_start") = 0.1,
+             py::arg("debug_csv_path") = "",
              py::call_guard<py::gil_scoped_release>());
 
     py::class_<qanneal::CTPIMCResult>(m, "CTPIMCResult")

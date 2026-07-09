@@ -951,4 +951,416 @@ SQAResult SQAAnnealer::run_optimal(double beta,
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Bond-susceptibility SURROGATE schedule.
+//
+// Two stages (Singh et al., "Bond Susceptibility as a Surrogate for Spectral
+// Gaps in Quantum Annealing Schedule Design"):
+//   1. Pilot scan: measure chi_B = Var(B) on a uniform grid of the annealing
+//      parameter s = A0/(A0+gamma), carrying the worldline state along the scan.
+//   2. Schedule: weight w(s) = chi_B(s) + chi_0, allocate the time budget via
+//      tau(s) = int w / int w, invert tau at uniform targets, and run a fresh
+//      standard SQA anneal along the resulting gamma(t) at fixed beta.
+// Unlike run_optimal (which drives J_perp through the Roland-Cerf exponent
+// alpha), the surrogate uses chi_B itself as the time-allocation weight — the
+// paper's robust, spectrum-free prescription.
+// ---------------------------------------------------------------------------
+SQASurrogateResult SQAAnnealer::run_surrogate(double beta,
+                                              double gamma_start,
+                                              double gamma_end,
+                                              std::size_t num_steps,
+                                              std::size_t sweeps_per_step,
+                                              std::size_t worldline_sweeps,
+                                              std::size_t cluster_sweeps,
+                                              std::size_t scan_points,
+                                              std::size_t scan_sweeps,
+                                              std::size_t scan_burn,
+                                              double chi0_fraction,
+                                              double driver_A0,
+                                              double beta_ramp_fraction,
+                                              double beta_ramp_start,
+                                              const std::string &debug_csv_path) {
+    if (num_steps < 2) {
+        throw std::invalid_argument("num_steps must be >= 2.");
+    }
+    if (sweeps_per_step == 0 && worldline_sweeps == 0 && cluster_sweeps == 0) {
+        throw std::invalid_argument("At least one of sweeps_per_step, worldline_sweeps, or cluster_sweeps must be > 0.");
+    }
+    if (!(beta > 0.0)) {
+        throw std::invalid_argument("beta must be > 0.");
+    }
+    if (!(gamma_end > 0.0) || !(gamma_start > gamma_end)) {
+        throw std::invalid_argument("Require gamma_start > gamma_end > 0.");
+    }
+    if (scan_points < 4) {
+        throw std::invalid_argument("scan_points must be >= 4.");
+    }
+    if (scan_sweeps == 0) {
+        throw std::invalid_argument("scan_sweeps must be > 0.");
+    }
+    if (!(chi0_fraction > 0.0)) {
+        throw std::invalid_argument("chi0_fraction must be > 0.");
+    }
+
+    // s = A0/(A0+gamma) is exact for the symmetric path A(s)=A0*(1-s), B(s)=s:
+    // the driver/problem strength RATIO equals gamma when A0*(1-s)/s = gamma.
+    const double A0 = (driver_A0 > 0.0) ? driver_A0 : gamma_start;
+    auto gamma_to_s = [A0](double g) { return A0 / (A0 + g); };
+    auto s_to_gamma = [A0](double s) {
+        s = std::min(std::max(s, 1e-10), 1.0 - 1e-10);
+        return A0 * (1.0 - s) / s;
+    };
+
+    const double s_lo = gamma_to_s(gamma_start);  // quantum end (large gamma)
+    const double s_hi = gamma_to_s(gamma_end);    // classical end (small gamma)
+
+    const std::size_t n = backend_->size();
+    const std::size_t slices = slices_;
+    const double beta_scale = beta / static_cast<double>(slices);
+
+    SQASurrogateResult result;
+    result.driver_A0 = A0;
+
+    std::ofstream dbg;
+    if (!debug_csv_path.empty()) {
+        dbg.open(debug_csv_path);
+        if (dbg) {
+            dbg << "phase,index,s,gamma,j_perp,chi_B,beta\n";
+            dbg.setf(std::ios::scientific);
+            dbg.precision(8);
+        } else {
+            std::cerr << "[qanneal SQA run_surrogate] WARNING: could not open debug CSV '"
+                      << debug_csv_path << "'.\n";
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Stage 1: pilot chi_B(s) scan.  Uniform s grid, ascending from the
+    // quantum end to the classical end; the worldline state is carried
+    // between grid points (the scan itself anneals, aiding equilibration).
+    // Metropolis + optional cluster sweeps with exact incremental B updates,
+    // matching the estimator used by run_optimal's calibration.
+    // ------------------------------------------------------------------
+    SQAState scan_state = SQAState::random(replicas_, slices, n, rng_);
+
+    std::vector<std::mt19937_64> replica_rng(replicas_);
+    for (std::size_t r = 0; r < replicas_; ++r) {
+        replica_rng[r].seed(rng_());
+    }
+
+    std::vector<double> local_fields(replicas_ * slices * n, 0.0);
+    for (std::size_t r = 0; r < replicas_; ++r) {
+        for (std::size_t t = 0; t < slices; ++t) {
+            backend_->compute_local_fields(
+                scan_state.slice_ptr(r, t), n,
+                &local_fields[(r * slices + t) * n]);
+        }
+    }
+
+    std::vector<std::vector<char>> cluster_buf(replicas_, std::vector<char>(slices));
+    std::vector<std::vector<std::size_t>> stack_buf(replicas_);
+    for (auto &s : stack_buf) s.reserve(slices);
+
+    std::vector<std::vector<std::size_t>> spin_orders(replicas_);
+    for (std::size_t r = 0; r < replicas_; ++r) {
+        spin_orders[r].resize(n);
+        std::iota(spin_orders[r].begin(), spin_orders[r].end(), 0);
+    }
+
+    std::vector<std::vector<double>> B_samples(replicas_);
+    const std::size_t pilot_cluster = cluster_sweeps > 0 ? 1 : 0;
+
+    // Run (burn + measure) sweeps at fixed j_perp; fill B_samples with one B
+    // value per measurement sweep per replica.
+    auto pilot_point = [&](double j_perp) {
+        const double join_prob = 1.0 - std::exp(-2.0 * j_perp);
+#ifdef _OPENMP
+#pragma omp parallel for if(replicas_ > 1) schedule(static)
+#endif
+        for (long long rr = 0; rr < static_cast<long long>(replicas_); ++rr) {
+            const std::size_t replica = static_cast<std::size_t>(rr);
+            auto &local_rng = replica_rng[replica];
+            std::uniform_real_distribution<double> uniform(0.0, 1.0);
+            std::uniform_int_distribution<std::size_t> slice_pick(0, slices - 1);
+
+            double *my_lf = local_fields.data() + replica * slices * n;
+            auto &my_spin_order = spin_orders[replica];
+            auto &my_cluster = cluster_buf[replica];
+            auto &my_stack = stack_buf[replica];
+
+            double b_r = bond_sum_replica(scan_state, replica, slices, n);
+            auto &samples = B_samples[replica];
+            samples.clear();
+
+            const std::size_t total_sweeps = scan_burn + scan_sweeps;
+            for (std::size_t sweep = 0; sweep < total_sweeps; ++sweep) {
+                // Metropolis slice sweep with exact incremental B tracking.
+                std::shuffle(my_spin_order.begin(), my_spin_order.end(), local_rng);
+                for (std::size_t t = 0; t < slices; ++t) {
+                    int8_t *sptr = scan_state.slice_ptr(replica, t);
+                    double *fields = my_lf + t * n;
+                    const std::size_t prev_t = (t == 0) ? (slices - 1) : (t - 1);
+                    const std::size_t next_t = (t + 1) % slices;
+                    const int8_t *prev_ptr = scan_state.slice_ptr(replica, prev_t);
+                    const int8_t *next_ptr = scan_state.slice_ptr(replica, next_t);
+
+                    for (std::size_t idx = 0; idx < n; ++idx) {
+                        const std::size_t spin = my_spin_order[idx];
+                        const int8_t s = sptr[spin];
+                        const int nn_sum = static_cast<int>(prev_ptr[spin]) +
+                                           static_cast<int>(next_ptr[spin]);
+                        const double de_classical =
+                            -2.0 * static_cast<double>(s) * fields[spin];
+                        const double de_trotter =
+                            2.0 * j_perp * static_cast<double>(s) * static_cast<double>(nn_sum);
+                        const double de = beta_scale * de_classical + de_trotter;
+                        if (de <= 0.0 || uniform(local_rng) < std::exp(-de)) {
+                            sptr[spin] = static_cast<int8_t>(-s);
+                            backend_->update_local_fields_after_flip(fields, sptr, n, spin, s);
+                            b_r += -2.0 * static_cast<double>(s) * static_cast<double>(nn_sum);
+                        }
+                    }
+                }
+
+                // Optional cluster sweep (Swendsen-Wang along imaginary time):
+                // decorrelates B, which is an imaginary-time observable.
+                for (std::size_t cs = 0; cs < pilot_cluster; ++cs) {
+                    std::shuffle(my_spin_order.begin(), my_spin_order.end(), local_rng);
+                    for (std::size_t idx = 0; idx < n; ++idx) {
+                        const std::size_t spin = my_spin_order[idx];
+                        const std::size_t seed = slice_pick(local_rng);
+
+                        std::fill(my_cluster.begin(), my_cluster.end(), 0);
+                        my_stack.clear();
+                        my_stack.push_back(seed);
+                        my_cluster[seed] = 1;
+                        const int8_t seed_spin = scan_state.slice_ptr(replica, seed)[spin];
+
+                        while (!my_stack.empty()) {
+                            const std::size_t t = my_stack.back();
+                            my_stack.pop_back();
+                            const std::size_t prev = (t == 0) ? (slices - 1) : (t - 1);
+                            const std::size_t next = (t + 1) % slices;
+                            if (!my_cluster[prev] &&
+                                scan_state.slice_ptr(replica, prev)[spin] == seed_spin &&
+                                uniform(local_rng) < join_prob) {
+                                my_cluster[prev] = 1;
+                                my_stack.push_back(prev);
+                            }
+                            if (!my_cluster[next] &&
+                                scan_state.slice_ptr(replica, next)[spin] == seed_spin &&
+                                uniform(local_rng) < join_prob) {
+                                my_cluster[next] = 1;
+                                my_stack.push_back(next);
+                            }
+                        }
+
+                        double delta_classical = 0.0;
+                        double delta_time = 0.0;
+                        double delta_B = 0.0;
+                        for (std::size_t t = 0; t < slices; ++t) {
+                            if (!my_cluster[t]) continue;
+                            delta_classical += -2.0 * static_cast<double>(seed_spin) *
+                                               (my_lf + t * n)[spin];
+                            const std::size_t prev = (t == 0) ? (slices - 1) : (t - 1);
+                            const std::size_t next = (t + 1) % slices;
+                            if (!my_cluster[prev]) {
+                                const double bond =
+                                    static_cast<double>(seed_spin) *
+                                    static_cast<double>(scan_state.slice_ptr(replica, prev)[spin]);
+                                delta_time += 2.0 * j_perp * bond;
+                                delta_B    += -2.0 * bond;
+                            }
+                            if (!my_cluster[next]) {
+                                const double bond =
+                                    static_cast<double>(seed_spin) *
+                                    static_cast<double>(scan_state.slice_ptr(replica, next)[spin]);
+                                delta_time += 2.0 * j_perp * bond;
+                                delta_B    += -2.0 * bond;
+                            }
+                        }
+
+                        const double delta = beta_scale * delta_classical + delta_time;
+                        if (delta <= 0.0 || uniform(local_rng) < std::exp(-delta)) {
+                            for (std::size_t t = 0; t < slices; ++t) {
+                                if (!my_cluster[t]) continue;
+                                int8_t *sptr = scan_state.slice_ptr(replica, t);
+                                sptr[spin] = static_cast<int8_t>(-seed_spin);
+                                backend_->update_local_fields_after_flip(
+                                    my_lf + t * n, sptr, n, spin, seed_spin);
+                            }
+                            b_r += delta_B;
+                        }
+                    }
+                }
+
+                if (sweep >= scan_burn) {
+                    samples.push_back(b_r);
+                }
+            }
+        }
+    };
+
+    // Pooled Var(B) over all replicas' measurement samples.
+    auto chi_from_samples = [&]() -> double {
+        double B_sum = 0.0, B2_sum = 0.0;
+        std::size_t total = 0;
+        for (std::size_t r = 0; r < replicas_; ++r) {
+            for (double b : B_samples[r]) {
+                B_sum  += b;
+                B2_sum += b * b;
+                ++total;
+            }
+        }
+        if (total < 2) return 0.0;
+        const double mean  = B_sum  / static_cast<double>(total);
+        const double mean2 = B2_sum / static_cast<double>(total);
+        return std::max(mean2 - mean * mean, 0.0);
+    };
+
+    const std::size_t P = scan_points;
+    result.scan_s.resize(P);
+    result.scan_gamma.resize(P);
+    result.scan_chi_B.resize(P);
+    for (std::size_t m = 0; m < P; ++m) {
+        const double s_m = s_lo + (s_hi - s_lo) * static_cast<double>(m) /
+                                  static_cast<double>(P - 1);
+        const double gamma_m = s_to_gamma(s_m);
+        const double j_perp_m = trotter_coupling(beta, gamma_m, slices);
+        pilot_point(j_perp_m);
+        const double chi = chi_from_samples();
+        result.scan_s[m] = s_m;
+        result.scan_gamma[m] = gamma_m;
+        result.scan_chi_B[m] = chi;
+        if (dbg) {
+            dbg << "scan," << m << ',' << s_m << ',' << gamma_m << ','
+                << j_perp_m << ',' << chi << ',' << beta << '\n';
+        }
+    }
+
+    // QCP estimate: the chi_B peak.
+    const std::size_t peak =
+        static_cast<std::size_t>(std::distance(
+            result.scan_chi_B.begin(),
+            std::max_element(result.scan_chi_B.begin(), result.scan_chi_B.end())));
+    result.s_star = result.scan_s[peak];
+    result.gamma_star = result.scan_gamma[peak];
+    result.j_perp_star = trotter_coupling(beta, result.gamma_star, slices);
+
+    // Regularization chi_0 = chi0_fraction * max(chi_B); a flat/zero profile
+    // degrades gracefully to a linear-in-s schedule.
+    const double max_chi = result.scan_chi_B[peak];
+    if (!(max_chi > 0.0) || !std::isfinite(max_chi)) {
+        std::cerr << "[qanneal SQA run_surrogate] WARNING: chi_B scan is flat/non-finite; "
+                     "falling back to a linear-in-s schedule.\n";
+        result.chi0 = 1.0;
+    } else {
+        result.chi0 = chi0_fraction * max_chi;
+    }
+    const double chi0 = result.chi0;
+
+    // ------------------------------------------------------------------
+    // Stage 2: build the surrogate schedule.
+    //   w(s) = chi_B(s) + chi_0 (linear interpolation between scan points),
+    //   tau(s) = cumulative integral of w, s_k = tau^{-1}(k/(n2-1)).
+    // ------------------------------------------------------------------
+    auto weight_at = [&](double s) -> double {
+        const auto &xs = result.scan_s;
+        const auto &ys = result.scan_chi_B;
+        double chi;
+        if (s <= xs.front()) {
+            chi = ys.front();
+        } else if (s >= xs.back()) {
+            chi = ys.back();
+        } else {
+            std::size_t hi = 1;
+            while (hi < P && xs[hi] < s) ++hi;
+            const std::size_t lo = hi - 1;
+            const double t = (s - xs[lo]) / (xs[hi] - xs[lo]);
+            chi = ys[lo] + t * (ys[hi] - ys[lo]);
+        }
+        return std::max(chi, 0.0) + chi0;
+    };
+
+    // Two-phase split as in run_optimal: phase 1 thermally ramps beta at fixed
+    // gamma_start; phase 2 runs the surrogate gamma schedule at fixed beta.
+    std::size_t n_phase1 = 0;
+    if (beta_ramp_fraction > 0.0) {
+        n_phase1 = static_cast<std::size_t>(beta_ramp_fraction * static_cast<double>(num_steps));
+        if (n_phase1 > num_steps - 2) n_phase1 = num_steps - 2;  // keep >= 2 surrogate steps
+    }
+    const std::size_t n_phase2 = num_steps - n_phase1;
+
+    const std::size_t GRID = 4096;
+    const double hs = (s_hi - s_lo) / static_cast<double>(GRID);
+    std::vector<double> Wcum(GRID + 1, 0.0);
+    double prev_w = weight_at(s_lo);
+    for (std::size_t k = 1; k <= GRID; ++k) {
+        const double sk = s_lo + static_cast<double>(k) * hs;
+        const double cur_w = weight_at(sk);
+        Wcum[k] = Wcum[k - 1] + 0.5 * (prev_w + cur_w) * hs;
+        prev_w = cur_w;
+    }
+    const double W_total = Wcum[GRID];
+
+    std::vector<double> betas(num_steps, beta);
+    std::vector<double> gammas(num_steps, gamma_start);
+    result.s_schedule.resize(num_steps, s_lo);
+
+    for (std::size_t step = 0; step < n_phase1; ++step) {
+        const double frac = (n_phase1 > 1)
+            ? static_cast<double>(step) / static_cast<double>(n_phase1 - 1)
+            : 1.0;
+        betas[step] = beta_ramp_start + (beta - beta_ramp_start) * frac;
+    }
+
+    std::size_t k = 0;
+    for (std::size_t t = 0; t < n_phase2; ++t) {
+        const double target = (W_total > 0.0)
+            ? (static_cast<double>(t) / static_cast<double>(n_phase2 - 1)) * W_total
+            : 0.0;
+        while (k < GRID && Wcum[k + 1] < target) ++k;
+        const double w0 = Wcum[k], w1 = Wcum[k + 1];
+        const double frac = (w1 > w0) ? (target - w0) / (w1 - w0) : 0.0;
+        const double s_t = s_lo + (static_cast<double>(k) + frac) * hs;
+        const double g_t = std::min(std::max(s_to_gamma(s_t), gamma_end), gamma_start);
+        const std::size_t step = n_phase1 + t;
+        result.s_schedule[step] = s_t;
+        gammas[step] = g_t;
+    }
+
+    result.beta_schedule = betas;
+    result.gamma_schedule = gammas;
+
+    if (dbg) {
+        for (std::size_t step = 0; step < num_steps; ++step) {
+            dbg << (step < n_phase1 ? "beta_ramp," : "run,") << step << ','
+                << result.s_schedule[step] << ',' << gammas[step] << ','
+                << trotter_coupling(betas[step], gammas[step], slices) << ",,"
+                << betas[step] << '\n';
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Main anneal: fresh worldline state along the surrogate schedule,
+    // through the existing (unchanged) run() machinery.  The computed
+    // schedule is installed for the duration of the call and the caller's
+    // schedule is restored afterwards.
+    // ------------------------------------------------------------------
+    SQASchedule main_sched = SQASchedule::from_vectors(std::move(betas), std::move(gammas));
+    std::swap(schedule_, main_sched);
+    SQAResult base;
+    try {
+        base = run(sweeps_per_step, worldline_sweeps, cluster_sweeps, 0, nullptr);
+    } catch (...) {
+        std::swap(schedule_, main_sched);
+        throw;
+    }
+    std::swap(schedule_, main_sched);
+    result.best_state = std::move(base.best_state);
+    result.best_energy = base.best_energy;
+    result.energy_trace = std::move(base.energy_trace);
+    return result;
+}
+
 }

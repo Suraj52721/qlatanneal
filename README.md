@@ -1,6 +1,6 @@
 # qanneal
 
-**Research-grade Ising/QUBO optimizer** — version 0.6.1
+**Research-grade Ising/QUBO optimizer** — version 0.7.0
 
 Four annealing engines from classical SA to the closest available CPU simulation of quantum annealing, plus a theoretically-grounded **optimal adaptive J⊥ schedule** derived from the local adiabaticity condition.
 
@@ -214,6 +214,49 @@ result = solve(
     optimal_num_steps=150,
 )
 ```
+
+---
+
+## Bond-Susceptibility Surrogate Schedule *(new in 0.7.0)*
+
+A second, independent scheduling strategy alongside `schedule_type="optimal"` above,
+implementing the surrogate described in *"Bond Susceptibility as a Surrogate for Spectral
+Gaps in Quantum Annealing Schedule Design"* (Singh, Nagpal, Chauhan & Hassan). Instead of
+driving J⊥ through the Roland–Cerf exponent χ_B^α, it uses **χ_B itself as the
+time-allocation weight** — the paper shows this smoother, spectrum-free allocation avoids
+two finite-time failure modes of the exact local-adiabatic schedule (a boundary-gap trap
+when the minimum gap sits at the end of the anneal, and a coherent oscillatory instability
+from over-concentrating time near an interior minimum gap).
+
+**How it works**: (1) a pilot SQA scan measures χ_B(s) on a uniform grid of the annealing
+parameter `s = A₀/(A₀+Γ)`; (2) the time budget is allocated with weight
+`w(s) = χ_B(s) + χ₀` (χ₀ a small regularization) via the cumulative integral
+`τ(s) = ∫w / ∫w`, inverted at uniform time targets; (3) a fresh standard SQA anneal runs
+along the resulting Γ(t) at fixed β, preceded by the same proven thermal β-ramp used by
+`schedule_type="optimal"`.
+
+```python
+result = solve(
+    problem,
+    method="sqa",                # surrogate is currently SQA-only
+    schedule_type="surrogate",
+    reads=15,
+    replicas=4,
+    optimal_num_steps=150,
+    # optional overrides — all auto-computed from the problem/schedule if omitted:
+    # surrogate_gamma_start=4.0,
+    # surrogate_gamma_end=0.05,
+    # surrogate_scan_points=16,        # pilot chi_B(s) scan resolution
+    # surrogate_chi0_fraction=0.05,    # chi_0 = fraction * max(chi_B)
+    # optimal_debug_csv="surrogate.csv",
+)
+print(result.best_energy, result.best_sample)
+```
+
+Direct C++/pybind11 access via `SQAAnnealer.run_surrogate(...)` returns a
+`SQASurrogateResult` with the full pilot χ_B(s) profile, the quantum-critical-point
+estimate from its peak (`s_star`, `gamma_star`, `j_perp_star`), and the resolved
+per-step schedule — see [`docs/api.md`](docs/api.md) for the complete reference.
 
 ### J⊥ schedule helpers
 

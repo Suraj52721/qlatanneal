@@ -1,4 +1,4 @@
-# qanneal API Reference — v0.6.1
+# qanneal API Reference — v0.7.0
 
 Complete reference for every public class, function, and parameter.
 
@@ -19,6 +19,15 @@ Complete reference for every public class, function, and parameter.
 ---
 
 ## What's New
+
+**0.7.0**
+- New **bond-susceptibility surrogate schedule**: `SQAAnnealer.run_surrogate()` and
+  `solve(method="sqa", schedule_type="surrogate")`. Implements the χ_B-as-time-weight
+  surrogate from Singh et al., *"Bond Susceptibility as a Surrogate for Spectral Gaps in
+  Quantum Annealing Schedule Design"* — a pilot χ_B(s) scan followed by a cumulative
+  time allocation, distinct from (and additive to) the existing `run_optimal()` path.
+- New `SQASurrogateResult` with the pilot scan profile, QCP estimate (`s_star`,
+  `gamma_star`, `j_perp_star`), and the resolved per-step schedule.
 
 **0.6.1**
 - SQA `run_optimal()` **two-phase protocol**: β-ramp (thermal) then calibrated adaptive J⊥
@@ -554,6 +563,66 @@ print(result.j_perp_trace[:5])  # first 5 J_perp values
 
 ---
 
+**`run_surrogate(beta, gamma_start, gamma_end, num_steps=100, sweeps_per_step=20, worldline_sweeps=0, cluster_sweeps=0, scan_points=16, scan_sweeps=30, scan_burn=10, chi0_fraction=0.05, driver_A0=0.0, beta_ramp_fraction=0.3, beta_ramp_start=0.1, debug_csv_path="")` → `SQASurrogateResult`** *(new in 0.7.0)*
+
+The **bond-susceptibility surrogate schedule** (Singh et al., *"Bond Susceptibility as a
+Surrogate for Spectral Gaps in Quantum Annealing Schedule Design"*). A separate,
+additive method alongside `run_optimal()`: instead of driving J⊥ through the
+Roland–Cerf exponent χ_B^α, it uses χ_B itself as the annealing-time weight.
+
+**Stage 1 (pilot scan)**: measures χ_B(s) = Var(B) on a uniform grid of `scan_points`
+values of the annealing parameter `s = A₀/(A₀+Γ)` between `gamma_start` (quantum end)
+and `gamma_end` (classical end), carrying the worldline state along the scan
+(`scan_burn` burn-in + `scan_sweeps` measurement sweeps per grid point, with exact
+incremental B-tracking through Metropolis and optional Swendsen–Wang cluster updates).
+
+**Stage 2 (schedule)**: builds the time-allocation weight `w(s) = χ_B(s) + χ₀` where
+`χ₀ = chi0_fraction · max(χ_B)` regularizes the velocity away from the peak, computes
+`τ(s) = ∫₀ˢ w / ∫₀¹ w`, and inverts it at `num_steps` uniform time targets to get
+`Γ(t) = A₀(1−s(t))/s(t)`. A fresh standard SQA anneal then runs along this schedule at
+fixed β, preceded by the same phase-1 thermal β-ramp used by `run_optimal()`
+(`beta_ramp_fraction` of the budget, `beta_ramp_start` → `beta` at fixed `gamma_start`).
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `beta` | — | **Required.** Fixed inverse temperature β for phase 2 (and the ramp target in phase 1). |
+| `gamma_start` | — | **Required.** Starting transverse field Γ (quantum end). Must be > `gamma_end`. |
+| `gamma_end` | — | **Required.** Target transverse field Γ (classical end). |
+| `num_steps` | `100` | Total schedule steps (phase 1 + phase 2). |
+| `sweeps_per_step` | `20` | Metropolis sweeps per main-anneal step. |
+| `worldline_sweeps` | `0` | Worldline sweeps per main-anneal step. |
+| `cluster_sweeps` | `0` | Swendsen–Wang cluster sweeps per main-anneal step. |
+| `scan_points` | `16` | Number of s-grid points in the pilot χ_B scan. |
+| `scan_sweeps` | `30` | Measurement sweeps per scan point (after burn-in). |
+| `scan_burn` | `10` | Burn-in sweeps per scan point. |
+| `chi0_fraction` | `0.05` | χ₀ = this fraction of the scan's max χ_B. |
+| `driver_A0` | `0.0` | Driver scale A₀ in `s = A₀/(A₀+Γ)`; `<= 0` resolves to `gamma_start`. |
+| `beta_ramp_fraction` | `0.3` | Fraction of `num_steps` spent on the phase-1 thermal β-ramp. |
+| `beta_ramp_start` | `0.1` | Starting β for the phase-1 ramp. |
+| `debug_csv_path` | `""` | If set, writes the pilot scan and resolved schedule to CSV. |
+
+**Raises** `ValueError` if `num_steps < 2`, `beta <= 0`, `gamma_start <= gamma_end`,
+`scan_points < 4`, `scan_sweeps == 0`, `chi0_fraction <= 0`, or all of
+`sweeps_per_step`/`worldline_sweeps`/`cluster_sweeps` are 0.
+
+Returns `SQASurrogateResult` (see [Result Classes](#result-classes)).
+
+```python
+from qanneal import SQAAnnealer, SQASchedule
+
+dummy = SQASchedule.from_vectors([1.0], [1.0])
+ann = SQAAnnealer(ising, dummy, trotter_slices=32, replicas=4)
+
+result = ann.run_surrogate(
+    beta=4.0, gamma_start=4.0, gamma_end=0.05,
+    num_steps=150, sweeps_per_step=20, worldline_sweeps=3, cluster_sweeps=1,
+)
+print(result.best_energy)
+print(result.s_star, result.gamma_star)   # chi_B-peak QCP estimate
+```
+
+---
+
 ### `SQAParallelTemperingAnnealer(hamiltonian, betas, gammas, trotter_slices, backend="cpu")`
 
 SQA with replica exchange on a (β, Γ) ladder — the closest CPU simulation of a quantum annealer.
@@ -748,6 +817,38 @@ plt.show()
 
 ---
 
+### `SQASurrogateResult` *(new in 0.7.0)*
+From `SQAAnnealer.run_surrogate()`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `best_state` | `State` | Best classical projection found during the main anneal |
+| `best_energy` | `float` | Energy of `best_state` |
+| `energy_trace` | `list[float]` | Energy at each main-anneal step (phase 1 + phase 2) |
+| `beta_schedule` | `list[float]` | Resolved β at each step |
+| `gamma_schedule` | `list[float]` | Resolved Γ at each step (monotone non-increasing) |
+| `s_schedule` | `list[float]` | Annealing parameter `s = A₀/(A₀+Γ)` at each step |
+| `scan_s` | `list[float]` | s-grid points from the pilot χ_B scan |
+| `scan_gamma` | `list[float]` | Γ values corresponding to `scan_s` |
+| `scan_chi_B` | `list[float]` | χ_B measured at each `scan_s` point (the surrogate profile) |
+| `s_star` | `float` | Quantum-critical-point estimate: s at the χ_B peak |
+| `gamma_star` | `float` | Γ at the χ_B peak |
+| `j_perp_star` | `float` | Trotter coupling J⊥ at the χ_B peak |
+| `chi0` | `float` | Regularization χ₀ actually used (`chi0_fraction · max(χ_B)`) |
+| `driver_A0` | `float` | Resolved driver scale A₀ |
+
+```python
+result = ann.run_surrogate(beta=4.0, gamma_start=4.0, gamma_end=0.05, num_steps=150)
+
+import matplotlib.pyplot as plt
+plt.plot(result.scan_s, result.scan_chi_B)
+plt.axvline(result.s_star, color="r", linestyle="--", label="chi_B peak (QCP estimate)")
+plt.xlabel("s"); plt.ylabel("chi_B"); plt.legend()
+plt.show()
+```
+
+---
+
 ### `SQAParallelTemperingResult`
 From `SQAParallelTemperingAnnealer.run()`. Same fields as `ParallelTemperingResult`.
 
@@ -904,13 +1005,22 @@ runs multiple reads, and returns the best result.
 | `pt_gammas` | None | sqapt | Explicit Γ ladder (must pair with pt_betas) |
 | `ctpimc_qubits_per_update` | 1 | ctpimc | Update cluster size |
 | `ctpimc_qubits_per_chain` | 1 | ctpimc | Chain length for lattice mode |
-| **`schedule_type`** | `"standard"` | sqa, sqapt | **`"optimal"`** to use the locally-adiabatic adaptive J⊥ schedule *(new in 0.4.0)* |
+| **`schedule_type`** | `"standard"` | sqa, sqapt | **`"optimal"`** for the Roland-Cerf adaptive J⊥ schedule *(0.4.0)*, **`"surrogate"`** for the bond-susceptibility surrogate schedule *(0.7.0, sqa only)* |
 | `optimal_eps_tilde` | `0.05` | sqa, sqapt | Adiabaticity parameter ε̃ for `schedule_type="optimal"`. Smaller = slower/more precise |
 | `optimal_alpha` | `15/14` | sqa, sqapt | Universality exponent α (default = 1-D quantum Ising class) |
-| `optimal_num_steps` | `100` | sqa, sqapt | Max adaptive steps (auto-derived from schedule length if None) |
-| `optimal_j_perp_start` | None | sqa, sqapt | Starting J⊥ (auto-computed from problem scale if None) |
-| `optimal_j_perp_end` | None | sqa, sqapt | Target J⊥ (auto-computed from problem scale if None) |
-| `optimal_beta` | None | sqa, sqapt | Fixed β during the run (auto-computed from problem scale if None) |
+| `optimal_num_steps` | `100` | sqa, sqapt | Max adaptive/surrogate steps (auto-derived from schedule length if None) |
+| `optimal_j_perp_start` | None | sqa, sqapt | Starting J⊥ for `"optimal"` (auto-computed from problem scale if None) |
+| `optimal_j_perp_end` | None | sqa, sqapt | Target J⊥ for `"optimal"` (auto-computed from problem scale if None) |
+| `optimal_beta` | None | sqa, sqapt | Fixed β during the run (auto-computed from problem scale if None); shared by `"optimal"` and `"surrogate"` |
+| `optimal_beta_ramp_fraction` | `0.3` | sqa | Phase-1 thermal β-ramp fraction; shared by `"optimal"` and `"surrogate"` |
+| `optimal_debug_csv` | None | sqa, sqapt | Per-step schedule diagnostics CSV path; shared by `"optimal"` and `"surrogate"` |
+| `surrogate_gamma_start` | None | sqa | Starting Γ for `"surrogate"` (default: max Γ of the resolved standard schedule) |
+| `surrogate_gamma_end` | None | sqa | Target Γ for `"surrogate"` (default: min Γ of the resolved standard schedule) |
+| `surrogate_scan_points` | `16` | sqa | Pilot χ_B(s) scan grid size for `"surrogate"` |
+| `surrogate_scan_sweeps` | `30` | sqa | Measurement sweeps per scan point |
+| `surrogate_scan_burn` | `10` | sqa | Burn-in sweeps per scan point |
+| `surrogate_chi0_fraction` | `0.05` | sqa | χ₀ = this fraction of the scan's max χ_B |
+| `surrogate_driver_A0` | `0.0` | sqa | Driver scale A₀; `<= 0` resolves to `surrogate_gamma_start` |
 
 **`schedule_type="optimal"` example**:
 ```python
@@ -925,6 +1035,19 @@ result = solve(
     optimal_eps_tilde=0.02,
     optimal_num_steps=300,
     # all optimal_* params are auto-computed from problem scale if omitted
+)
+```
+
+**`schedule_type="surrogate"` example** *(new in 0.7.0, sqa only)*:
+```python
+result = solve(
+    problem,
+    method="sqa",
+    schedule_type="surrogate",
+    reads=15,
+    replicas=4,
+    optimal_num_steps=150,
+    # all surrogate_* params are auto-computed from the problem/schedule if omitted
 )
 ```
 

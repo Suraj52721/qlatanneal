@@ -46,6 +46,7 @@ __all__ = [
     "SQAMetricsObserver",
     "SQAStateTraceObserver",
     "SQAResult",
+    "SQASurrogateResult",
     "SQAAnnealer",
     "SQAParallelTemperingAnnealer",
     "SQAParallelTemperingResult",
