@@ -1,0 +1,118 @@
+\chapter{Parallelism and HPC Deployment}
+\label{ch:hpc}
+
+\qv{} parallelises at three nested levels: OpenMP threads inside one solver
+call, processes across reads on one node, and MPI/SLURM across nodes. They
+compose --- but must be composed deliberately to avoid oversubscription.
+
+\section{OpenMP: inside a run}
+
+Built in by default (\code{QANNEAL\_ENABLE\_OPENMP=ON}). Parallel regions:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{8.6cm}@{}}
+\toprule
+\textbf{Class} & \textbf{Parallelised over}\\
+\midrule
+\code{ReplicaAnnealer} & replicas\\
+\code{SQAAnnealer} & replicas (each owning its slices), when no sweep-level
+observer is attached\\
+\code{SQAParallelTemperingAnnealer} & ladder replicas\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Thread count is controlled at runtime:
+
+\begin{bashcode}
+export OMP_NUM_THREADS=8
+\end{bashcode}
+
+Each replica owns a private RNG stream, local-field cache and cluster
+buffers, so results are independent of the thread count; runs are
+reproducible for a fixed \code{seed} and fixed replica count.
+
+\begin{warnbox}[Oversubscription]
+Threads only help while \code{OMP\_NUM\_THREADS} $\le$ the number of
+parallel units (replicas). And when you add process-level parallelism
+(below), \emph{multiply} the two: 8 worker processes $\times$ 8 OpenMP
+threads = 64 threads on what may be a 16-core node --- a large slowdown, not
+a speedup. Standard practice on shared nodes: set
+\code{OMP\_NUM\_THREADS=1} for many-process runs, or partition cores
+explicitly (e.g.\ 4 workers $\times$ 4 threads on 16 cores).
+\end{warnbox}
+
+\section{Process-level: the HPC launcher}
+
+\code{examples/python/hpc\_sqa\_launcher.py} distributes \emph{reads}
+(independent restarts) over workers --- the ideal parallelisation axis, since
+reads never communicate:
+
+\begin{bashcode}
+# Single node, multiprocessing (no extra dependencies)
+python examples/python/hpc_sqa_launcher.py \
+  --n 5000 --method sqapt --reads 64 --workers 8
+
+# Multi-node MPI (requires mpi4py)
+mpirun -n 32 python examples/python/hpc_sqa_launcher.py \
+  --n 50000 --method sqa --reads 8 --mpi
+
+# Built-in scaling study
+python examples/python/hpc_sqa_launcher.py --scaling --method sqapt --mode fast
+\end{bashcode}
+
+Each worker runs a full solver call with a distinct seed and writes a JSON
+result; the launcher merges them and reports the global best.
+
+\section{SLURM job arrays}
+
+The most portable route on clusters --- no \code{mpi4py}, no long-running
+master, natural fault tolerance (a failed task costs one read batch):
+
+\begin{bashcode}
+sbatch scripts/slurm/run_sqa_array.sh
+# afterwards, merge all task outputs:
+python examples/python/merge_array_results.py results/run_*.json
+\end{bashcode}
+
+Adapt the array script's template variables (problem size, method, reads per
+task, walltime) to your site; give each array task a distinct
+\code{--seed} derived from \code{\$SLURM\_ARRAY\_TASK\_ID} so reads are
+independent.
+
+\section{C++ MPI}
+
+For fully native distributed annealing:
+
+\begin{bashcode}
+cmake -S . -B build -DQANNEAL_ENABLE_MPI=ON
+cmake --build build -j
+mpirun -n 8 build/qanneal_mpi_example
+\end{bashcode}
+
+The MPI layer (\code{MPIContext}, \code{run\_replica\_anneal()} in
+\code{include/qanneal/mpi/}) runs one replica group per rank and reduces the
+best result to rank 0. See \code{examples/mpi/sa\_mpi.cpp} for the pattern.
+
+\section{Choosing the axis of parallelism}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{5.2cm}p{5.6cm}@{}}
+\toprule
+\textbf{Level} & \textbf{Use when} & \textbf{Cost model}\\
+\midrule
+OpenMP (replicas) & one hard instance, want a better $\chiB$ estimate or PT
+ladder & shared memory; near-linear up to replica count\\
+Processes (reads) & success probability per read $<1$; want
+$1-(1-p)^R$ aggregation & embarrassingly parallel; linear\\
+Nodes (MPI/SLURM) & instance sweeps, many problems $\times$ many reads &
+linear; prefer job arrays for robustness\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A practical default for one hard instance on one node: \code{replicas=8}
+with \code{OMP\_NUM\_THREADS=8}, and \code{reads} spread over remaining
+cores via the launcher.

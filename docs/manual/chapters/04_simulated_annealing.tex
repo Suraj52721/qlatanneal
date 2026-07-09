@@ -1,0 +1,200 @@
+\chapter{Simulated Annealing (\code{sa})}
+\label{ch:sa}
+
+The classical baseline: Metropolis dynamics under a rising-$\beta$ schedule.
+Fast, simple, and surprisingly strong on smooth landscapes; every other
+engine in \qv{} is measured against it.
+
+\section{The algorithm}
+
+Given a Hamiltonian $E(\cdot)$ (Chapter~\ref{ch:math}) and a schedule
+$\beta_1<\dots<\beta_K$:
+
+\begin{keyeq}[Simulated annealing]
+\begin{enumerate}
+\item Draw a uniformly random initial state $s\in\{-1,+1\}^n$ and compute the
+local-field cache $f_i=h_i+\sum_{j\ne i}J_{ij}s_j$.
+\item For each schedule step $k=1,\dots,K$, repeat
+\code{sweeps\_per\_beta} times:
+  \begin{enumerate}
+  \item[a.] For each spin $i$ in a freshly shuffled order:
+  propose flipping $s_i$; compute $\Delta E=-2s_if_i$
+  (Eq.~\eqref{eq:deltaE}); accept with probability
+  $\min(1,\mathrm{e}^{-\beta_k\Delta E})$
+  (Eq.~\eqref{eq:metropolis}); on acceptance update $s_i\to-s_i$ and the
+  affected cache entries $f_j\mathrel{+}=-2s_iJ_{ij}$.
+  \end{enumerate}
+\item Track the best configuration ever visited; return it with its energy
+and the per-step energy trace.
+\end{enumerate}
+\end{keyeq}
+
+The returned optimum is the \emph{best-ever} state, not the final state ---
+a late uphill excursion can never lose an already-found solution.
+
+\paragraph{Complexity.} One sweep costs $O(n)$ proposals; each proposal is
+$O(1)$, and each \emph{accepted} flip costs $O(n)$ (dense) or $O(\deg i)$
+(sparse) to refresh the cache. A full run is
+$O\!\left(K\cdot\code{sweeps\_per\_beta}\cdot n\cdot \bar d\,\right)$ with
+$\bar d$ the mean accepted-flip degree --- in practice linear in problem size
+for sparse graphs.
+
+\section{Schedule design}
+\label{sec:sa-schedules}
+
+\subsection{Fixed linear schedule}
+
+The simplest choice ramps $\beta$ linearly:
+
+\begin{pycode}
+from qanneal import AnnealSchedule
+schedule = AnnealSchedule.linear(beta_start=0.1, beta_end=5.0, steps=60)
+\end{pycode}
+
+Guidance: $\beta_{\text{start}}$ should be hot enough that nearly all moves
+are accepted ($\beta_{\text{start}}\Delta \lesssim 0.15$), and
+$\beta_{\text{end}}$ cold enough that uphill moves are rare
+($\beta_{\text{end}}\Delta \gtrsim 3$), where $\Delta$ is the typical
+$|\Delta E|$ of a flip. Since $\Delta$ depends on your coupling scale, fixed
+values only suit problems of a known scale --- which motivates:
+
+\subsection{Problem-adaptive tuned schedules (recommended)}
+\label{sec:tuned-schedules}
+
+\code{auto\_schedule\_sa\_tuned(problem, mode=...)} removes the guesswork:
+
+\begin{enumerate}
+\item Sample \code{probes} (default 256) random single-spin flips on random
+states and record $|\Delta E|$ for each.
+\item Set the characteristic scale $\Delta$ to the \emph{75th percentile} of
+the $|\Delta E|$ sample (robust to outliers, biased toward the barrier-sized
+moves that matter).
+\item Choose target acceptances $(p_{\text{start}},p_{\text{end}})$ from the
+\code{mode} preset and invert Eq.~\eqref{eq:beta-from-p}:
+$\beta_{\text{start}}=-\ln p_{\text{start}}/\Delta$,\;
+$\beta_{\text{end}}=-\ln p_{\text{end}}/\Delta$.
+\item Pick the step count from the preset, growing as $\sqrt n$.
+\end{enumerate}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccl@{}}
+\toprule
+\code{mode} & $p_{\text{start}}$ & $p_{\text{end}}$ & steps & use case\\
+\midrule
+\code{"fast"}     & 0.85 & 0.22 & $30+6\sqrt n$  & prototyping, large sweeps\\
+\code{"balanced"} & 0.88 & 0.10 & $60+6\sqrt n$  & default production\\
+\code{"accurate"} & 0.90 & 0.04 & $110+6\sqrt n$ & best solution quality\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{pycode}
+from qanneal import auto_schedule_sa_tuned, solve
+
+schedule = auto_schedule_sa_tuned(ising, mode="balanced")
+result   = solve(ising, method="sa", schedule=schedule, reads=32, seed=7)
+\end{pycode}
+
+The optional \code{beta\_end\_scale} multiplies $\beta_{\text{end}}$
+(values $>1$ freeze harder); \code{steps} overrides the preset count.
+
+\section{Independent replicas: \code{ReplicaAnnealer}}
+\label{sec:replica-annealer}
+
+Independent restarts are the cheapest variance reduction: run $R$ chains
+from different random seeds and keep the best. \code{ReplicaAnnealer} does
+this inside one C++ call, parallelised over replicas with OpenMP:
+
+\begin{pycode}
+from qanneal import ReplicaAnnealer
+
+ann = ReplicaAnnealer(ising, schedule, replicas=16)
+res = ann.run(sweeps_per_beta=50)
+res.global_best_energy       # best over all replicas
+res.replicas                 # per-replica results
+res.average_energy_trace     # mean energy across replicas per step
+\end{pycode}
+
+If a single run finds the optimum with probability $p$, then $R$ independent
+runs succeed with probability $1-(1-p)^R$ --- restarts convert a mediocre
+per-run success rate into a high aggregate one, at perfectly parallel cost.
+The high-level \code{solve(..., reads=R)} applies the same principle across
+full solver invocations for every method.
+
+\section{Classical parallel tempering}
+\label{sec:classical-pt}
+
+Annealing commits to a one-way trajectory in $\beta$. \emph{Parallel
+tempering} (replica exchange) instead runs $R$ chains \emph{simultaneously}
+at a fixed ladder $\beta_1<\beta_2<\dots<\beta_R$ and lets configurations
+migrate between temperatures.
+
+\subsection{The swap rule, derived}
+
+The joint system samples the product measure
+$\Pi(s_1,\dots,s_R)\propto\prod_r \mathrm{e}^{-\beta_r E(s_r)}$.
+A \emph{swap move} proposes exchanging the configurations at adjacent rungs
+$r,r{+}1$. Detailed balance for the joint measure requires acceptance
+\begin{equation}
+A_{\text{swap}}
+=\min\!\left(1,\;
+\frac{\mathrm{e}^{-\beta_r E(s_{r+1})}\,\mathrm{e}^{-\beta_{r+1}E(s_r)}}
+     {\mathrm{e}^{-\beta_r E(s_r)}\,\mathrm{e}^{-\beta_{r+1}E(s_{r+1})}}
+\right)
+\end{equation}
+which simplifies to the celebrated form
+
+\begin{keyeq}[Parallel-tempering swap acceptance]
+\begin{equation}
+A_{\text{swap}}=\min\!\Bigl(1,\;
+\mathrm{e}^{\,(\beta_{r+1}-\beta_r)\,\bigl(E(s_{r+1})-E(s_r)\bigr)}\Bigr).
+\label{eq:pt-swap}
+\end{equation}
+\end{keyeq}
+
+A configuration that found a low energy while ``hot'' (small $\beta$, high
+mobility) is passed down the ladder toward large $\beta$, where it is
+refined; conversely, stuck cold configurations are recycled upward to remelt.
+Each chain still satisfies detailed balance at its own $\beta_r$, so all
+equilibrium properties are preserved.
+
+\subsection{Usage}
+
+\begin{pycode}
+import numpy as np
+from qanneal import ParallelTemperingAnnealer
+
+betas = np.linspace(0.1, 5.0, 8).tolist()
+ann   = ParallelTemperingAnnealer(ising, betas)
+res   = ann.run(sweeps_per_step=50, steps=100, swap_interval=1)
+
+res.best_energy
+res.swap_acceptance_trace   # fraction of accepted swaps per step
+\end{pycode}
+
+\begin{notebox}[Healthy swap acceptance]
+Aim for a mean swap acceptance of roughly $0.2$--$0.5$. Near zero means the
+rungs are too far apart (energy distributions at adjacent $\beta$ barely
+overlap --- add rungs or shrink the range); near one means rungs are wastefully
+close. A geometric $\beta$ ladder is the standard starting point because the
+overlap between adjacent rungs is then roughly constant across the ladder.
+\end{notebox}
+
+The quantum generalisation of this machinery --- replica exchange on a joint
+$(\beta,\Gamma)$ ladder --- is the \code{sqapt} engine of
+Chapter~\ref{ch:sqapt}.
+
+\section{When to choose \code{sa}}
+
+\begin{itemize}
+\item You need a fast, dependency-free baseline or a sanity check for an
+encoding.
+\item The landscape is smooth or funnel-like (many greedy paths reach the
+optimum).
+\item Very large sparse instances where the cost per sweep dominates and the
+quantum engines' extra dimension ($M$ slices) is unaffordable.
+\end{itemize}
+
+For rugged, frustrated landscapes with tall narrow barriers, continue to
+Chapter~\ref{ch:sqa}.

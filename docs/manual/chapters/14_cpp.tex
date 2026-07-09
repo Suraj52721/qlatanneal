@@ -1,0 +1,122 @@
+\chapter{The C++ API}
+\label{ch:cpp}
+
+The entire engine layer is usable directly from C++17 --- the Python API is a
+thin binding over it, so every concept of Chapters~\ref{ch:sa}--%
+\ref{ch:optimal} maps one-to-one.
+
+\section{Umbrella include and headers}
+
+\begin{cppcode}
+#include "qanneal/core.hpp"
+\end{cppcode}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Class / function} & \textbf{Header}\\
+\midrule
+\code{DenseIsing} & \code{dense\_ising.hpp}\\
+\code{SparseIsing}, \code{SparseEdge} & \code{sparse\_ising.hpp}\\
+\code{QUBO} & \code{qubo.hpp}\\
+\code{AnnealSchedule} & \code{schedule.hpp}\\
+\code{SQASchedule} & \code{sqa\_schedule.hpp}\\
+\code{Annealer} & \code{annealer.hpp}\\
+\code{ReplicaAnnealer} & \code{replica\_annealer.hpp}\\
+\code{ParallelTemperingAnnealer} & \code{parallel\_tempering.hpp}\\
+\code{SQAAnnealer} & \code{sqa\_annealer.hpp}\\
+\code{SQAParallelTemperingAnnealer} & \code{sqa\_parallel\_tempering.hpp}\\
+\code{CTPIMCAnnealer} & \code{ctpimc\_annealer.hpp}\\
+\code{State}, \code{SQAState} & \code{state.hpp}, \code{sqa\_state.hpp}\\
+Observers (all) & \code{metrics\_observer.hpp}\\
+\code{MPIContext}, \code{run\_replica\_anneal()} &
+\code{mpi/mpi\_context.hpp}, \code{mpi/mpi\_replica.hpp}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{A complete C++ example}
+
+Dense spin glass, simulated annealing:
+
+\begin{cppcode}
+#include "qanneal/core.hpp"
+#include <iostream>
+#include <random>
+#include <vector>
+
+int main() {
+    const std::size_t n = 64;
+    std::mt19937_64 rng(7);
+    std::normal_distribution<double> g(0.0, 1.0);
+
+    std::vector<double> h(n, 0.0);
+    std::vector<std::vector<double>> J(n, std::vector<double>(n, 0.0));
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = i + 1; j < n; ++j)
+            J[i][j] = J[j][i] = g(rng);
+
+    qanneal::DenseIsing ising(h, J, /*c=*/0.0);
+    auto schedule = qanneal::AnnealSchedule::linear(0.1, 5.0, 80);
+
+    qanneal::Annealer annealer(ising, schedule);
+    annealer.set_seed(42);
+    auto result = annealer.run(/*sweeps_per_beta=*/60);
+
+    std::cout << "best energy: " << result.best_energy << "\n";
+    for (auto s : result.best_state.spins) std::cout << int(s) << ' ';
+    std::cout << std::endl;
+    return 0;
+}
+\end{cppcode}
+
+And the quantum analogue in a few lines:
+
+\begin{cppcode}
+auto sqa_sched = qanneal::SQASchedule::from_vectors(betas, gammas);
+qanneal::SQAAnnealer sqa(ising, sqa_sched,
+                         /*trotter_slices=*/32, /*replicas=*/4);
+auto res = sqa.run(/*sweeps_per_beta=*/40,
+                   /*worldline_sweeps=*/4,
+                   /*cluster_sweeps=*/1);
+// adaptive schedule:
+auto opt = sqa.run_optimal(/*beta=*/1.0,
+                           /*j_perp_start=*/0.1, /*j_perp_end=*/25.0,
+                           /*eps_tilde=*/0.0,      // budget calibration
+                           /*alpha=*/15.0/14.0,
+                           /*num_steps=*/150, /*sweeps_per_step=*/20,
+                           /*worldline_sweeps=*/3);
+\end{cppcode}
+
+Reference build targets and CMake flags are in Chapter~\ref{ch:install};
+\code{examples/dense\_ising\_sa.cpp},
+\code{examples/sqa\_quantum\_parallel\_tempering.cpp} and
+\code{examples/mpi/sa\_mpi.cpp} in the repository are compiled by the
+default build and serve as living documentation.
+
+\section{Implementation notes for contributors}
+
+\begin{itemize}
+\item \textbf{Local-field caches.} Every engine keeps
+$f_i=h_i+\sum_jJ_{ij}s_j$ per (replica, slice); proposals are $O(1)$
+(Eq.~\eqref{eq:deltaE}), accepted flips update the cache along the flipped
+spin's neighbourhood. Backends implement
+\code{energy()}, \code{delta\_energy()} and
+\code{compute\_local\_fields()} over raw \code{int8\_t*} slices.
+\item \textbf{Threading model.} OpenMP parallelises over replicas; each
+replica owns disjoint regions of the field cache, its own
+\code{std::mt19937\_64} stream seeded from the master RNG, its own shuffled
+visit order and cluster buffers. No locks are needed in the hot path.
+\item \textbf{Bond-sum tracking.} The adaptive schedule's $B$
+(Eq.~\eqref{eq:chiB}) is updated incrementally by every move
+(Section~\ref{sec:chib-est}) --- keep this invariant when adding new move
+types: a move must report its exact $\Delta B$.
+\item \textbf{Observers.} A sweep-level observer forces the sequential SQA
+path (deterministic interleaving for reproducible traces); metrics-only
+observers keep the parallel path.
+\item \textbf{Errors.} Parameter validation throws
+\code{std::invalid\_argument} (surfaced as \code{ValueError} in Python);
+sentinel resolutions that alter semantics print a \code{cerr} warning rather
+than failing silently.
+\end{itemize}

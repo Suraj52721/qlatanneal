@@ -1,0 +1,162 @@
+\chapter{Symbols, Conventions, and Reference Tables}
+\label{ch:appendix}
+
+\section{Symbol glossary}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{8.2cm}@{}}
+\toprule
+\textbf{Symbol} & \textbf{API name} & \textbf{Meaning}\\
+\midrule
+$s_i\in\{-1,+1\}$ & spins & Ising variables; \qv's native representation.\\
+$x_i\in\{0,1\}$ & bits & QUBO variables; $x=(1+s)/2$.\\
+$h_i$ & \code{h} & local (longitudinal) field on spin $i$.\\
+$J_{ij}$ & \code{J} & pair coupling; ferro $<0$, antiferro $>0$.\\
+$c$ & \code{c} & constant energy offset.\\
+$Q_{ij}$ & \code{Q} & QUBO matrix; diagonal = linear terms.\\
+$\beta$ & \code{beta} & inverse temperature $1/(k_BT)$, dimensionless.\\
+$\Gamma$ & \code{gamma} & transverse-field strength (quantum fluctuations).\\
+$M$ & \code{trotter\_slices} & number of imaginary-time slices.\\
+$\Jp$ & \code{j\_perp} & Trotter coupling,
+$\frac12\ln\coth(\beta\Gamma/M)$ (Eq.~\eqref{eq:jperp}).\\
+$S[s]$ & --- & effective classical action (Eq.~\eqref{eq:action}).\\
+$B$ & --- & imaginary-time bond sum
+$\sum_{t,i}s^t_is^{t+1}_i$ (Eq.~\eqref{eq:chiB}).\\
+$\chiB$ & \code{chi\_B} & bond susceptibility $\operatorname{Var}(B)$.\\
+$\epst$ & \code{eps\_tilde} & adiabaticity scale of the adaptive update
+(Eq.~\eqref{eq:update-law}).\\
+$\alpha$ & \code{alpha} & universality exponent $z/(2-\eta)+1/2$.\\
+$J_{\mathrm{rms}}$ & \code{j\_rms} & RMS of non-zero couplings; sets the
+critical scale $\Jp^c$.\\
+$R$ & \code{replicas} & Trotter systems (SQA) / ladder rungs (SQAPT).\\
+$T$ & \code{num\_steps} & adaptive-schedule step budget.\\
+$\Delta$ & --- & probed 75th-percentile $|\Delta E|$ (tuned schedules).\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Universality exponents for \texorpdfstring{$\alpha$}{alpha}}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Universality class} & \textbf{System} & $\alpha=z/(2-\eta)+1/2$\\
+\midrule
+1-D quantum Ising & transverse-field Ising chain ($z=1$, $\eta=1/4$) &
+$15/14\approx1.071$ (default)\\
+2-D quantum Ising & 2-D TFIM & $7/4=1.75$\\
+Mean-field & Sherrington--Kirkpatrick-like & $\approx1.0$ (tentative)\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For combinatorial problems of unknown class, keep the default: budget
+calibration (Section~\ref{sec:calibration}) makes the schedule's overall
+pace insensitive to moderate errors in $\alpha$.
+
+\section{Key formulas on one page}
+
+\begin{keyeq}
+\begin{align*}
+&\textbf{Ising:} && E(s)=\textstyle\sum_i h_is_i+\sum_{i<j}J_{ij}s_is_j+c\\
+&\textbf{QUBO:} && E(x)=\textstyle\sum_{ij}Q_{ij}x_ix_j,\quad x=(1+s)/2\\
+&\textbf{Local field / flip:} && f_i=h_i+\textstyle\sum_jJ_{ij}s_j,\qquad
+\Delta E_i=-2s_if_i\\
+&\textbf{Metropolis:} && A=\min(1,\mathrm{e}^{-\beta\Delta E})\\
+&\textbf{Trotter coupling:} && \Jp=\tfrac12\ln\coth(\beta\Gamma/M)\\
+&\textbf{SQA action:} && S=\tfrac{\beta}{M}\textstyle\sum_t\Ecl(s^t)
+-\Jp\sum_{t,i}s^t_is^{t+1}_i\\
+&\textbf{SQA flip:} && \Delta S=\tfrac{\beta}{M}\Delta\Ecl
++2\Jp s^t_i(s^{t-1}_i+s^{t+1}_i)\\
+&\textbf{SW join probability:} && p_{\mathrm{join}}=1-\mathrm{e}^{-2\Jp}\\
+&\textbf{PT swap (classical):} && A=\min\!\bigl(1,
+\mathrm{e}^{(\beta_{r+1}-\beta_r)(E_{r+1}-E_r)}\bigr)\\
+&\textbf{PT swap (SQA):} && A=\min\!\bigl(1,
+\mathrm{e}^{-(S_r(x_{r+1})+S_{r+1}(x_r)-S_r(x_r)-S_{r+1}(x_{r+1}))}\bigr)\\
+&\textbf{Adaptive update:} && \Delta\Jp=\epst\,\chiB^{-\alpha},\qquad
+\alpha=\tfrac{z}{2-\eta}+\tfrac12\\
+&\textbf{Calibration:} && \epst=\tfrac1T\textstyle
+\int_{J_0}^{J_{\mathrm{end}}}\chiB(J)^\alpha\,dJ\\
+&\textbf{Trajectory:} && J^{(t)}=G^{-1}\!\bigl(\tfrac{t}{T-1}G(J_{\mathrm{end}})\bigr),
+\quad G(J)=\textstyle\int_{J_0}^{J}\chiB^\alpha\,dJ'
+\end{align*}
+\end{keyeq}
+
+\section{Repository map}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{9.2cm}@{}}
+\toprule
+\textbf{Path} & \textbf{Contents}\\
+\midrule
+\code{include/qanneal/} & C++ public headers (Chapter~\ref{ch:cpp}).\\
+\code{src/} & C++ engine implementations; \code{src/third\_party/} vendored
+localPIMC.\\
+\code{python/qanneal/} & Python package: \code{solver.py} (dispatch,
+tuned schedules, helpers), bindings import.\\
+\code{examples/python/} & Runnable demos and launchers.\\
+\code{examples/}, \code{examples/mpi/} & C++ examples.\\
+\code{notebooks/} & Four tutorial Jupyter notebooks (quickstart, SQA
+physics, SQAPT/CT-PIMC, large problems).\\
+\code{scripts/} & \code{sanity\_schedule.py},
+\code{plot\_schedule\_trajectory.py}, SLURM templates.\\
+\code{docs/} & Markdown docs; this manual in \code{docs/manual/}.\\
+\code{tests/} & Python test suite; C++ tests under \code{ctest}.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{License}
+
+\qv{} is released under the Apache License 2.0 (see \code{LICENSE}).
+The CT-PIMC engine incorporates D-Wave's \code{localPIMC} (Apache-2.0),
+credited in \code{NOTICE}.
+
+% ---------------------------------------------------------------------------
+\begin{thebibliography}{9}
+\raggedright
+
+\bibitem{metropolis}
+N.~Metropolis, A.~W.~Rosenbluth, M.~N.~Rosenbluth, A.~H.~Teller,
+E.~Teller, \emph{Equation of State Calculations by Fast Computing Machines},
+J.\ Chem.\ Phys.\ \textbf{21}, 1087 (1953).
+
+\bibitem{kirkpatrick}
+S.~Kirkpatrick, C.~D.~Gelatt, M.~P.~Vecchi, \emph{Optimization by Simulated
+Annealing}, Science \textbf{220}, 671 (1983).
+
+\bibitem{suzuki}
+M.~Suzuki, \emph{Relationship between d-Dimensional Quantal Spin Systems and
+(d+1)-Dimensional Ising Systems}, Prog.\ Theor.\ Phys.\ \textbf{56}, 1454
+(1976).
+
+\bibitem{kadowaki}
+T.~Kadowaki, H.~Nishimori, \emph{Quantum annealing in the transverse Ising
+model}, Phys.\ Rev.\ E \textbf{58}, 5355 (1998).
+
+\bibitem{farhi}
+E.~Farhi, J.~Goldstone, S.~Gutmann, M.~Sipser, \emph{Quantum Computation by
+Adiabatic Evolution}, arXiv:quant-ph/0001106 (2000).
+
+\bibitem{santoro}
+G.~E.~Santoro, R.~Marto\v{n}\'ak, E.~Tosatti, R.~Car, \emph{Theory of
+Quantum Annealing of an Ising Spin Glass}, Science \textbf{295}, 2427
+(2002).
+
+\bibitem{martonak}
+R.~Marto\v{n}\'ak, G.~E.~Santoro, E.~Tosatti, \emph{Quantum annealing by the
+path-integral Monte Carlo method: The two-dimensional random Ising model},
+Phys.\ Rev.\ B \textbf{66}, 094203 (2002).
+
+\bibitem{rolandcerf}
+J.~Roland, N.~J.~Cerf, \emph{Quantum search by local adiabatic evolution},
+Phys.\ Rev.\ A \textbf{65}, 042308 (2002).
+
+\bibitem{swendsenwang}
+R.~H.~Swendsen, J.-S.~Wang, \emph{Nonuniversal critical dynamics in Monte
+Carlo simulations}, Phys.\ Rev.\ Lett.\ \textbf{58}, 86 (1987).
+
+\end{thebibliography}

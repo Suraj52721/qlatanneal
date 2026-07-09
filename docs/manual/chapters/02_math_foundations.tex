@@ -1,0 +1,262 @@
+\chapter{Mathematical Foundations: Ising and QUBO}
+\label{ch:math}
+
+This chapter defines the two problem formulations \qv{} accepts, proves their
+exact equivalence, and shows how to encode several classic NP-hard problems.
+Everything later in the manual reduces to minimising one of these two energy
+functions.
+
+\section{The Ising model}
+\label{sec:ising}
+
+An \emph{Ising problem} on $n$ spins is defined by a vector of local fields
+$h\in\mathbb{R}^n$, a symmetric coupling matrix $J\in\mathbb{R}^{n\times n}$
+with zero diagonal, and an optional constant offset $c\in\mathbb{R}$.
+Each variable is a \emph{spin} $s_i\in\{-1,+1\}$.
+
+\begin{keyeq}[Ising energy]
+\begin{equation}
+E(s) \;=\; \sum_{i=1}^{n} h_i\, s_i \;+\; \sum_{i<j} J_{ij}\, s_i s_j \;+\; c,
+\qquad s_i\in\{-1,+1\}.
+\label{eq:ising}
+\end{equation}
+\end{keyeq}
+
+The task is to find the \emph{ground state}
+$s^\ast=\arg\min_{s\in\{-1,+1\}^n} E(s)$. The search space has $2^n$
+configurations, and for general $J$ the problem is NP-hard (it contains
+MaxCut as the special case $h=0$).
+
+\subsection{Sign conventions}
+
+\qv{} uses the convention of Eq.~\eqref{eq:ising} \emph{with a plus sign in
+front of the coupling term}. Consequences:
+
+\begin{itemize}
+\item $J_{ij}<0$ is \emph{ferromagnetic}: the term $J_{ij}s_is_j$ is lowest
+when $s_i=s_j$, so the bond prefers aligned spins.
+\item $J_{ij}>0$ is \emph{antiferromagnetic}: the bond prefers $s_i=-s_j$.
+\item $h_i>0$ pushes spin $i$ toward $s_i=-1$ (the term $h_is_i$ is then
+negative); $h_i<0$ pushes toward $+1$.
+\item Only the upper triangle $i<j$ of $J$ enters the energy. The Python
+model classes expect a \emph{symmetric} matrix ($J_{ij}=J_{ji}$) and read
+the upper triangle.
+\item The offset $c$ shifts all energies uniformly. It never affects
+\emph{which} configuration is optimal, but it lets converted problems (e.g.\
+QUBO$\to$Ising) report energies in the original problem's units.
+\end{itemize}
+
+\subsection{Frustration --- why the problem is hard}
+
+If every bond could be satisfied simultaneously the ground state would be
+found by greedy propagation. Hardness arises from \emph{frustration}:
+cycles of bonds whose preferences cannot all be met. The elementary example
+is a triangle of antiferromagnetic bonds $J_{12},J_{13},J_{23}>0$: any spin
+assignment satisfies at most two of the three bonds. Frustrated systems have
+\emph{rugged energy landscapes} --- exponentially many local minima separated
+by barriers --- and it is exactly this structure that annealing methods (and
+their quantum-inspired refinements) are designed to navigate.
+
+\begin{physbox}
+A local minimum is a configuration whose energy cannot be lowered by flipping
+any single spin. A greedy descent gets trapped in the first such minimum it
+meets. Thermal annealing escapes over barriers with probability
+$\mathrm{e}^{-\beta\,\Delta E}$ (Chapter~\ref{ch:sa}); quantum annealing
+tunnels \emph{through} barriers with an amplitude that depends on barrier
+\emph{width} rather than height (Chapter~\ref{ch:sqa}). Tall, narrow barriers
+are precisely where the quantum route wins.
+\end{physbox}
+
+\section{The QUBO model}
+\label{sec:qubo}
+
+A \emph{Quadratic Unconstrained Binary Optimisation} (QUBO) problem is
+specified by a single matrix $Q\in\mathbb{R}^{n\times n}$ over binary
+variables $x_i\in\{0,1\}$:
+
+\begin{keyeq}[QUBO energy]
+\begin{equation}
+E(x) \;=\; \sum_{i=1}^{n}\sum_{j=1}^{n} Q_{ij}\, x_i x_j,
+\qquad x_i\in\{0,1\}.
+\label{eq:qubo}
+\end{equation}
+\end{keyeq}
+
+Because $x_i^2=x_i$ for binary variables, the diagonal entries $Q_{ii}$ act
+as \emph{linear} coefficients and the off-diagonal entries as pairwise
+couplings. The double sum counts both orders $(i,j)$ and $(j,i)$; if you
+start from an upper-triangular formulation, either mirror the off-diagonal
+weights or halve them, keeping the represented pair strength explicit.
+
+\section{Exact equivalence of QUBO and Ising}
+\label{sec:qubo-ising}
+
+The two formulations are related by the affine change of variables
+
+\begin{keyeq}[Spin--bit map]
+\begin{equation}
+x_i=\frac{1+s_i}{2}
+\qquad\Longleftrightarrow\qquad
+s_i = 2x_i-1 .
+\label{eq:spinbit}
+\end{equation}
+\end{keyeq}
+
+\noindent
+so $s_i=+1\mapsto x_i=1$ and $s_i=-1\mapsto x_i=0$. We now derive the exact
+Ising parameters produced by \code{QUBO.to\_ising()}.
+
+Split Eq.~\eqref{eq:qubo} into diagonal and off-diagonal parts and substitute
+Eq.~\eqref{eq:spinbit}. For the diagonal part, using $x_i^2=x_i$:
+\begin{equation}
+\sum_i Q_{ii}x_i \;=\; \sum_i Q_{ii}\,\frac{1+s_i}{2}
+\;=\;\frac12\sum_i Q_{ii} \;+\; \frac12\sum_i Q_{ii}\,s_i .
+\end{equation}
+For the off-diagonal part, expand
+$x_ix_j=\tfrac14(1+s_i)(1+s_j)=\tfrac14\left(1+s_i+s_j+s_is_j\right)$:
+\begin{align}
+\sum_{i\neq j}Q_{ij}x_ix_j
+&=\frac14\sum_{i\neq j}Q_{ij}
+ +\frac14\sum_{i\neq j}Q_{ij}\,(s_i+s_j)
+ +\frac14\sum_{i\neq j}Q_{ij}\,s_is_j \notag\\
+&=\frac14\sum_{i\neq j}Q_{ij}
+ +\frac14\sum_i s_i \sum_{j\neq i}\bigl(Q_{ij}+Q_{ji}\bigr)
+ +\sum_{i<j}\frac{Q_{ij}+Q_{ji}}{4}\, s_is_j .
+\end{align}
+Collecting terms into the Ising form of Eq.~\eqref{eq:ising} gives the exact,
+approximation-free conversion:
+
+\begin{keyeq}[QUBO $\to$ Ising conversion (exact)]
+\begin{equation}
+h_i=\frac{Q_{ii}}{2}+\frac14\sum_{j\neq i}\bigl(Q_{ij}+Q_{ji}\bigr),
+\qquad
+J_{ij}=\frac{Q_{ij}+Q_{ji}}{4}\;\;(i<j),
+\qquad
+c=\frac12\sum_i Q_{ii}+\frac14\sum_{i\neq j}Q_{ij}.
+\label{eq:qubo2ising}
+\end{equation}
+\end{keyeq}
+
+Every energy is preserved exactly: $E_{\mathrm{QUBO}}(x)=E_{\mathrm{Ising}}(s)$
+whenever $x$ and $s$ are related by Eq.~\eqref{eq:spinbit}. In particular the
+minimisers coincide, and the offset $c$ makes even the numerical energy
+values agree --- this is why \qv{} carries $c$ through all its solvers.
+
+\begin{notebox}[Automatic conversion]
+You never need to perform this conversion by hand.
+\code{solve()} accepts a QUBO matrix (or dict, entry list, or dimod BQM)
+directly and converts internally; \code{return\_bits=True} maps the resulting
+spins back to bits. The formulas above are given so that reported energies
+and parameters are fully auditable.
+\end{notebox}
+
+\section{Encoding classic problems}
+\label{sec:encodings}
+
+The practical skill in using any Ising machine is the \emph{encoding}: recast
+your objective (plus constraints, via penalty terms) as
+Eq.~\eqref{eq:ising} or Eq.~\eqref{eq:qubo}. Three canonical examples follow;
+each is used again in the worked examples of Chapter~\ref{ch:examples}.
+
+\subsection{Number partitioning}
+\label{sec:numpart}
+
+\textbf{Problem.} Given positive numbers $a_1,\dots,a_n$, split them into two
+groups whose sums are as equal as possible.
+
+\textbf{Encoding.} Let $s_i=+1$ if $a_i$ goes to group $A$ and $s_i=-1$ for
+group $B$. The signed discrepancy is $D(s)=\sum_i a_i s_i$ and we minimise
+$D(s)^2$:
+\begin{equation}
+D(s)^2=\Bigl(\sum_i a_i s_i\Bigr)^2
+=\sum_i a_i^2\,\underbrace{s_i^2}_{=1} + 2\sum_{i<j}a_ia_j\,s_is_j
+=\underbrace{\sum_i a_i^2}_{c} + \sum_{i<j}\underbrace{2a_ia_j}_{J_{ij}}\,s_is_j .
+\end{equation}
+So the Ising instance has $h=0$, $J_{ij}=2a_ia_j$ and $c=\sum_ia_i^2$; a
+perfect partition has energy exactly $0$. Note every pair is coupled
+(fully-connected antiferromagnet) --- use \code{DenseIsing}.
+
+\subsection{MaxCut}
+\label{sec:maxcut}
+
+\textbf{Problem.} Given a weighted graph $G=(V,E,w)$, partition $V$ into two
+sets maximising the total weight of edges crossing the partition.
+
+\textbf{Encoding.} With $s_i=\pm1$ labelling the two sides, an edge $(i,j)$
+is cut iff $s_i\neq s_j$, i.e.\ $\tfrac{1-s_is_j}{2}=1$. Hence
+\begin{equation}
+\mathrm{Cut}(s)=\sum_{(i,j)\in E} w_{ij}\,\frac{1-s_is_j}{2}
+=\frac{W}{2}-\frac12\sum_{(i,j)\in E} w_{ij}\,s_is_j,
+\qquad W=\sum_{(i,j)\in E}w_{ij}.
+\end{equation}
+Maximising the cut is therefore \emph{minimising} the Ising energy with
+$h_i=0$, $J_{ij}=w_{ij}$ on the graph's edges and offset $c=-W/2$ if you want
+$E=-\mathrm{Cut}$ numerically. Sparse graphs should use \code{SparseIsing}.
+
+\subsection{Constrained problems via penalties: maximum-weight independent set}
+\label{sec:mwis}
+
+\textbf{Problem.} In a graph $G$, choose a set of vertices, no two adjacent,
+maximising total vertex weight $w_i$.
+
+\textbf{Encoding.} With bits $x_i\in\{0,1\}$ ($x_i=1$ means ``vertex chosen''),
+maximise $\sum_i w_ix_i$ subject to $x_ix_j=0$ for every edge. Constraints
+become penalty terms with a multiplier $\lambda>\max_i w_i$:
+\begin{equation}
+E(x)= -\sum_i w_i x_i + \lambda\sum_{(i,j)\in E} x_i x_j ,
+\end{equation}
+which is already a QUBO: $Q_{ii}=-w_i$, $Q_{ij}=\lambda/2$ for
+$i\ne j$ adjacent (splitting $\lambda$ over both orders). The penalty is
+calibrated so that violating any constraint always costs more than the
+largest possible gain, guaranteeing that the QUBO optimum is a feasible
+independent set.
+
+\begin{warnbox}[Penalty scale]
+Penalty multipliers should be as small as correctness allows. Oversized
+$\lambda$ inflates the energy scale of the constraint terms relative to the
+objective, which stiffens the landscape and makes annealing (classical or
+quantum) mix more slowly. \qv's auto-tuned schedules measure the
+\emph{combined} energy scale, which mitigates but cannot remove a badly
+unbalanced encoding.
+\end{warnbox}
+
+\section{Model classes in \qv}
+\label{sec:models}
+
+Three model containers implement the common \code{Hamiltonian} interface and
+are accepted anywhere a \code{problem} is expected:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Class} & \textbf{Storage} & \textbf{Memory} & \textbf{Best for}\\
+\midrule
+\code{DenseIsing(h, J, c)} & dense $n\times n$ & $O(n^2)$ & $n\lesssim 3000$, fully connected\\
+\code{SparseIsing(h, edges, n, c)} & edge list & $O(n+|E|)$ & sparse graphs, $n$ up to $10^5$+\\
+\code{QUBO(Q)} & dense or sparse & $O(n^2)$ / $O(|Q|)$ & binary problems; \code{.to\_ising()}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Their exact constructors and methods are documented in
+Section~\ref{sec:api-models}. Two operations matter for performance and are
+worth stating now:
+
+\begin{description}
+\item[\code{energy(s)}] evaluates Eq.~\eqref{eq:ising} from scratch:
+$O(n^2)$ for \code{DenseIsing}, $O(|E|)$ for \code{SparseIsing}.
+\item[\code{delta\_energy(s, i)}] returns the energy change if spin $i$ is
+flipped, \emph{without} recomputing the total. Writing the \emph{local
+field} $f_i = h_i+\sum_{j\neq i}J_{ij}s_j$, flipping $s_i\to-s_i$ changes the
+energy by
+\begin{equation}
+\Delta E_i \;=\; -2\,s_i\,f_i ,
+\label{eq:deltaE}
+\end{equation}
+an $O(n)$ (dense) or $O(\deg i)$ (sparse) computation. The C++ annealers go
+one step further and \emph{cache} all local fields, making each Metropolis
+proposal $O(1)$ with an $O(\deg i)$ cache update only on \emph{accepted}
+flips. This caching is the single most important implementation detail behind
+\qv's sweep throughput.
+\end{description}

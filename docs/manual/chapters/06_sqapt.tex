@@ -1,0 +1,183 @@
+\chapter{Quantum Parallel Tempering (\code{sqapt})}
+\label{ch:sqapt}
+
+\code{sqapt} combines the two strongest ideas of the previous chapters:
+the Suzuki--Trotter quantum simulation of Chapter~\ref{ch:sqa} and the
+replica-exchange machinery of Section~\ref{sec:classical-pt}. It is the
+\textbf{recommended default} for rugged, multi-modal problems: several
+complete SQA systems run simultaneously at different points of a
+$(\beta,\Gamma)$ ladder, and adjacent systems periodically swap
+configurations so that solutions discovered under strong fluctuations flow
+toward the strongly-frozen rungs where they are polished.
+
+\section{The $(\beta,\Gamma)$ ladder}
+
+Each of the $R$ replicas $r=1,\dots,R$ is a full Trotter system
+($n\times M$ spins) equilibrating at its own pair $(\beta_r,\Gamma_r)$,
+hence its own action $S_r$ (Eq.~\eqref{eq:action}) with its own
+$\Jp^{(r)}=\Jp(\beta_r,\Gamma_r,M)$. The ladder is arranged so that mobility
+decreases along it:
+
+\begin{center}
+\begin{tikzpicture}[scale=1.0,
+  rung/.style={rectangle,rounded corners=1.5pt,draw=qnavy!60,fill=qnavy!7,
+               minimum width=3.35cm,minimum height=0.72cm,font=\small},
+  sw/.style={{Stealth}-{Stealth},thick,qteal}]
+\node[rung,fill=qamber!12,draw=qamber!70] (r1) at (0,0)
+  {$r{=}1$: hot, quantum};
+\node[rung] (r2) at (4.1,0) {$r{=}2$};
+\node[font=\small\color{qgray}] (dots) at (7.0,0) {$\cdots$};
+\node[rung,fill=qnavy!16] (rR) at (9.9,0) {$r{=}R$: cold, classical};
+\draw[sw] (r1) -- node[above,font=\scriptsize\sffamily\color{qteal}]{swap} (r2);
+\draw[sw] (r2) -- (dots);
+\draw[sw] (dots) -- node[above,font=\scriptsize\sffamily\color{qteal}]{swap} (rR);
+\node[below=1.5mm of r1,font=\scriptsize\sffamily\color{qgray}]
+  {small $\beta$, large $\Gamma$};
+\node[below=1.5mm of rR,font=\scriptsize\sffamily\color{qgray}]
+  {large $\beta$, small $\Gamma$};
+\end{tikzpicture}
+\end{center}
+
+\code{auto\_ladder\_sqa\_tuned(problem, replicas=R, mode=...)} builds the
+ladder from the problem's probed energy scale:
+\begin{itemize}
+\item $\beta$ rungs are spaced \emph{geometrically} from
+$\beta_{\min}$ (hot) to $\beta_{\max}$ (cold), so adjacent-rung energy
+distributions overlap roughly uniformly along the ladder;
+\item $\Gamma$ rungs are spaced \emph{inverse-geometrically} --- high
+$\Gamma$ where $\beta$ is small, low $\Gamma$ where $\beta$ is large --- so
+every rung sits at a physically coherent point (thermal and quantum mobility
+rise and fall together).
+\end{itemize}
+
+\section{The quantum swap rule, derived}
+\label{sec:quantum-swap}
+
+The joint stationary measure is
+$\Pi(\{x_r\})\propto\prod_r\mathrm{e}^{-S_r(x_r)}$, where $x_r$ denotes the
+entire Trotter configuration of replica $r$ and
+\begin{equation}
+S_r(x)=\frac{\beta_r}{M}\sum_{t}\Ecl(s^t)\;-\;\Jp^{(r)}\sum_{t,i}s^t_i s^{t+1}_i
+\;\equiv\;\frac{\beta_r}{M}\,C(x)\;-\;\Jp^{(r)}\,B(x),
+\label{eq:action-cb}
+\end{equation}
+with $C(x)$ the summed classical energy over slices and $B(x)$ the total
+imaginary-time \emph{bond sum}. (The quantity $B$ returns as the central
+observable of Chapter~\ref{ch:optimal}.)
+
+A swap proposes exchanging the full configurations of rungs $r$ and $r{+}1$.
+Detailed balance for $\Pi$ gives the acceptance
+
+\begin{keyeq}[SQAPT swap acceptance]
+\begin{equation}
+A_{\text{swap}}=\min\Bigl(1,\;
+\exp\bigl[-\bigl(S_r(x_{r+1})+S_{r+1}(x_r)-S_r(x_r)-S_{r+1}(x_{r+1})\bigr)\bigr]\Bigr).
+\label{eq:sqapt-swap}
+\end{equation}
+\end{keyeq}
+
+This is precisely what the C++ core computes: it evaluates the four
+cross-actions $S_r(x_r)$, $S_{r+1}(x_{r+1})$, $S_r(x_{r+1})$,
+$S_{r+1}(x_r)$ from Eq.~\eqref{eq:action-cb} and applies
+Eq.~\eqref{eq:sqapt-swap}. Expanding via Eq.~\eqref{eq:action-cb}, the
+exponent splits into a thermal part and a quantum part:
+\begin{equation}
+\Delta_{\text{swap}}
+=\frac{\beta_{r}-\beta_{r+1}}{M}\bigl(C(x_{r+1})-C(x_{r})\bigr)
+\;-\;\bigl(\Jp^{(r)}-\Jp^{(r+1)}\bigr)\bigl(B(x_{r+1})-B(x_{r})\bigr).
+\label{eq:swap-split}
+\end{equation}
+The first term is the classical PT criterion Eq.~\eqref{eq:pt-swap} applied
+to slice-summed energies; the second exchanges configurations according to
+their quantum ``kinetic'' content. When all replicas \emph{share} one
+$\Jp$ --- as in the optimal-schedule mode of
+Section~\ref{sec:sqapt-optimal} --- the second term vanishes identically and
+the swap reduces to a purely classical criterion.
+
+\section{The algorithm}
+
+\code{SQAParallelTemperingAnnealer.run()} iterates \code{steps} epochs; in
+each epoch every replica performs its local SQA updates
+(\code{sweeps\_per\_step} single-spin sweeps, \code{worldline\_sweeps}
+worldline sweeps, optionally \code{cluster\_sweeps} SW sweeps --- all with
+the rules of Section~\ref{sec:sqa-moves} at that replica's own
+$(\beta_r,\Gamma_r,\Jp^{(r)})$), and every \code{swap\_interval} epochs a
+sweep of adjacent-pair swaps is attempted with
+Eq.~\eqref{eq:sqapt-swap}. Replicas are OpenMP-parallel; the per-epoch swap
+acceptance fraction is recorded in \code{swap\_acceptance\_trace}.
+
+Unlike annealing, the ladder is \emph{static}: no schedule ramps during the
+run. Optimisation progress comes from configurations drifting down the
+ladder. The best classical projection (best single slice, any replica, any
+epoch) is tracked exactly as in SQA.
+
+\section{Usage}
+
+\subsection{One call}
+
+\begin{pycode}
+from qanneal import solve
+
+result = solve(
+    ising,
+    method="sqapt",
+    replicas=8,          # ladder rungs
+    reads=8,
+    trotter_slices=24,
+    sweeps_per_beta=50,  # local sweeps per epoch
+    worldline_sweeps=4,
+    cluster_sweeps=1,    # SQAPT+SW
+    pt_steps=70,         # epochs
+    swap_interval=1,
+    seed=3,
+)
+\end{pycode}
+
+If no schedule/ladder is supplied, \code{solve()} calls
+\code{auto\_ladder\_sqa\_tuned} internally. Explicit ladders:
+
+\begin{pycode}
+from qanneal import auto_ladder_sqa_tuned, SQAParallelTemperingAnnealer
+
+ladder = auto_ladder_sqa_tuned(ising, replicas=8, mode="balanced")
+ann = SQAParallelTemperingAnnealer(
+    ising, ladder.betas, ladder.gammas, trotter_slices=24)
+res = ann.run(sweeps_per_step=50, worldline_sweeps=4,
+              steps=80, swap_interval=1, cluster_sweeps=1)
+print(res.best_energy)
+print(res.swap_acceptance_trace[-5:])   # aim for ~0.2-0.5
+\end{pycode}
+
+You may also hand explicit ladders to \code{solve()} via
+\code{pt\_betas=[...]}, \code{pt\_gammas=[...]} (they must pair up).
+
+\subsection{Reading the diagnostics}
+
+\begin{itemize}
+\item \code{swap\_acceptance\_trace} --- mean accepted-swap fraction per
+epoch. Healthy: $0.2$--$0.5$. Too low $\Rightarrow$ add rungs or narrow the
+ladder; too high $\Rightarrow$ rungs redundant.
+\item \code{final\_energies} --- final projected energy of each rung; should
+be ordered roughly hot-to-cold. A cold rung stuck far above the best energy
+signals insufficient epochs or a mobility bottleneck mid-ladder.
+\item \code{average\_energy\_trace} --- ladder-mean energy per epoch;
+plateaus indicate equilibration.
+\end{itemize}
+
+\section{Choosing \code{sqapt}}
+
+\begin{itemize}
+\item \textbf{Use it} for frustrated, glassy, multi-modal problems ---
+anything where single-trajectory annealing shows large read-to-read
+variance.
+\item Ladder size \code{replicas}$\,=8$ is a solid default; scale up with
+problem hardness, not with $n$.
+\item \code{cluster\_sweeps=1} (SQAPT+SW) is the strongest general-purpose
+configuration in the library.
+\item Prefer \code{sqa} when the problem is easy enough that restarts
+suffice --- SQAPT's ladder overhead ($R$ full Trotter systems) is then wasted.
+\end{itemize}
+
+The combination of \code{sqapt} with the adaptive $\Jp$ schedule --- a
+shared, susceptibility-paced Trotter coupling ramp across the whole ladder ---
+is covered in Section~\ref{sec:sqapt-optimal}.

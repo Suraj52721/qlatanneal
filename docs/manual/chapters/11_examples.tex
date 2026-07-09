@@ -1,0 +1,225 @@
+\chapter{Worked Examples}
+\label{ch:examples}
+
+Complete, runnable programs, each exercising one layer of the library. All
+assume \code{import numpy as np} and a working install
+(Chapter~\ref{ch:install}).
+
+\section{A three-variable QUBO, end to end}
+
+Minimise $E(x)=x_0+x_2-2x_0x_1-2x_1x_2$ over bits. Written as
+Eq.~\eqref{eq:qubo} with symmetric off-diagonals:
+
+\begin{pycode}
+import numpy as np
+from qanneal import solve
+
+Q = np.array([
+    [ 1.0, -1.0,  0.0],
+    [-1.0,  0.0, -1.0],
+    [ 0.0, -1.0,  1.0],
+], dtype=float)      # off-diagonals halved: the double sum counts both orders
+
+result = solve(Q, method="sqapt", reads=16, seed=0, return_bits=True)
+print(result.best_sample, result.best_energy)   # [1 1 1], -2.0
+\end{pycode}
+
+With all three bits set, $E=1+1-2-2=-2$: the two rewards outweigh the two
+penalties. (Equivalently, keep the unhalved matrix and interpret it as an
+upper-triangular specification mirrored for symmetry --- both conventions
+appear in the repository's examples; what matters is the total pair
+strength.)
+
+\section{Number partitioning}
+
+The encoding derived in Section~\ref{sec:numpart}:
+
+\begin{pycode}
+import numpy as np
+from qanneal import DenseIsing, solve
+
+nums = np.array([3, 5, 7, 11, 13], dtype=float)
+n = len(nums)
+
+J = np.zeros((n, n))
+for i in range(n):
+    for j in range(i + 1, n):
+        J[i, j] = J[j, i] = 2.0 * nums[i] * nums[j]
+
+ising  = DenseIsing(np.zeros(n), J, c=float(nums @ nums))
+result = solve(ising, method="sqa", reads=20, seed=42)
+
+spins = result.best_sample
+diff  = abs(float(nums @ spins))
+print(f"groups: {spins},  |sum difference| = {diff}")
+# 3+5+11 = 19 vs 7+13 = 20 -> diff 1.0 (best possible: total is odd)
+print(f"energy = {result.best_energy}")   # diff**2 exactly, thanks to c
+\end{pycode}
+
+\section{MaxCut on a random graph}
+
+The encoding of Section~\ref{sec:maxcut}, using \code{SparseIsing} and a
+\code{networkx} input for comparison:
+
+\begin{pycode}
+import numpy as np, networkx as nx
+from qanneal import SparseIsing, SparseEdge, solve
+
+rng = np.random.default_rng(1)
+G = nx.gnp_random_graph(60, 0.1, seed=1)
+for (u, v) in G.edges:
+    G.edges[u, v]["weight"] = float(rng.uniform(0.5, 2.0))
+
+# Route 1: explicit sparse Ising (J_ij = +w_ij; minimise sum w s s)
+edges = [SparseEdge(u, v, G.edges[u, v]["weight"]) for u, v in G.edges]
+ising = SparseIsing(np.zeros(G.number_of_nodes()), edges,
+                    G.number_of_nodes())
+res = solve(ising, method="sqapt", replicas=8, reads=16, seed=2)
+
+s = res.best_sample
+cut = sum(G.edges[u, v]["weight"] for u, v in G.edges if s[u] != s[v])
+print(f"cut weight = {cut:.3f}")
+
+# Route 2: hand the graph straight to solve() (weights read from edges)
+res2 = solve(G, method="sqapt", replicas=8, reads=16, seed=2)
+print(res2.var_order[:5])   # node ordering used for res2.best_sample
+\end{pycode}
+
+\section{Standard vs.\ optimal schedule}
+
+A dense spin glass, solved both ways at matched step budgets
+(cf.\ Chapter~\ref{ch:optimal}):
+
+\begin{pycode}
+import numpy as np
+from qanneal import solve, DenseIsing
+
+rng = np.random.default_rng(0)
+n = 50
+J = np.triu(rng.standard_normal((n, n)), 1)
+problem = DenseIsing(np.zeros(n), J + J.T)
+
+r_std = solve(problem, method="sqapt", replicas=8, reads=10,
+              progress=False, seed=5)
+
+r_opt = solve(problem, method="sqapt", replicas=8, reads=10,
+              progress=False, seed=5,
+              schedule_type="optimal",
+              optimal_eps_tilde=0.0,        # budget calibration
+              optimal_num_steps=150,
+              optimal_debug_csv="/tmp/opt_sched.csv")
+
+print(f"standard: {r_std.best_energy:.4f}")
+print(f"optimal : {r_opt.best_energy:.4f}")
+# Inspect the realised trajectory:
+#   python scripts/plot_schedule_trajectory.py /tmp/opt_sched.csv
+\end{pycode}
+
+\section{Inspecting the adaptive trajectory (low level)}
+
+\begin{pycode}
+import matplotlib.pyplot as plt
+from qanneal import SQAAnnealer, SQASchedule, optimal_j_perp_params
+
+beta, jp_start, jp_end = optimal_j_perp_params(problem, trotter_slices=32)
+
+dummy = SQASchedule.from_vectors([1.0], [1.0])
+ann = SQAAnnealer(problem, dummy, trotter_slices=32, replicas=4)
+res = ann.run_optimal(beta=beta,
+                      j_perp_start=jp_start, j_perp_end=jp_end,
+                      eps_tilde=0.0, num_steps=200, sweeps_per_step=20,
+                      worldline_sweeps=3)
+
+fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(7, 6))
+ax1.plot(res.j_perp_trace);  ax1.set_ylabel("J_perp")
+ax2.plot(res.energy_trace);  ax2.set_ylabel("energy")
+ax2.set_xlabel("adaptive step")
+ax1.set_title(f"calibrated eps_tilde = {res.calibrated_eps_tilde:.3g}")
+plt.tight_layout(); plt.show()
+\end{pycode}
+
+Expect the fast--slow--fast shape of Fig.~\ref{fig:fastslow}, with the
+steepest energy descent during the dwell.
+
+\section{Observers: watching an anneal converge}
+
+\begin{pycode}
+import matplotlib.pyplot as plt
+from qanneal import Annealer, MetricsObserver, AnnealSchedule
+
+schedule = AnnealSchedule.linear(0.1, 5.0, 60)
+obs = MetricsObserver()
+ann = Annealer(ising, schedule)
+ann.set_seed(11)
+res = ann.run(sweeps_per_beta=40, observer=obs)
+
+fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
+ax1.plot(obs.energy_trace);          ax1.set_ylabel("energy")
+ax2.plot(obs.magnetization_trace);   ax2.set_ylabel("magnetisation")
+ax2.set_xlabel("temperature step")
+plt.tight_layout(); plt.show()
+\end{pycode}
+
+For SQA, \code{SQAStateTraceObserver} additionally records per-sweep
+$(\beta,\Gamma)$, the sweep phase (slice / worldline / cluster), and full
+replica--slice state snapshots --- everything needed to animate worldlines
+or to study slice decorrelation.
+
+\section{A large sparse instance}
+
+Ten thousand spins on a random 3-regular graph --- comfortably in
+\code{SparseIsing} territory:
+
+\begin{pycode}
+import numpy as np, networkx as nx
+from qanneal import SparseIsing, SparseEdge, solve
+
+n = 10_000
+G = nx.random_regular_graph(3, n, seed=0)
+rng = np.random.default_rng(0)
+edges = [SparseEdge(u, v, float(rng.choice([-1.0, 1.0])))
+         for u, v in G.edges]
+ising = SparseIsing(np.zeros(n), edges, n)
+
+result = solve(ising, method="sa", reads=4, seed=1)   # SA first: baseline
+print(result.best_energy)
+
+result = solve(ising, method="sqa", trotter_slices=16, replicas=2,
+               reads=2, seed=1)                        # then quantum
+print(result.best_energy)
+\end{pycode}
+
+For instances of this size, start with \code{mode="fast"} tuned schedules
+and modest $M$; scale up only what the energy traces show to be limiting.
+
+\section{dimod interoperability}
+
+\begin{pycode}
+import dimod
+from qanneal import solve
+
+bqm = dimod.BinaryQuadraticModel(
+    {0: 1.0, 1: 3.0}, {(0, 1): -2.0}, vartype="BINARY")
+
+result = solve(bqm, method="sqa", reads=8, return_bits=True, seed=0)
+print(dict(zip(result.var_order, result.best_sample)))
+\end{pycode}
+
+\section{Recommended workflow for a new problem}
+
+\begin{enumerate}
+\item \textbf{Encode small, verify exactly.} Brute-force instances with
+$n\le20$ and check your encoding's optimum matches the known answer ---
+encoding bugs dominate all other failure modes.
+\item \textbf{Baseline with SA.} \code{method="sa"},
+\code{mode="fast"}: seconds of compute, and a reference energy.
+\item \textbf{Escalate to SQA} (\code{mode="balanced"}) and compare; then
+\textbf{SQAPT} (\code{replicas=8} and \code{cluster\_sweeps=1}) if reads
+disagree wildly --- disagreement is the signature of a rugged landscape.
+\item \textbf{Try the optimal schedule} when quality at fixed budget is the
+goal, after the pre-flight check of
+Section~\ref{sec:optimal-diagnostics}.
+\item \textbf{Track variance.} Always look at \code{result.energies} across
+reads, not just the best --- a method that finds the optimum in 15/16 reads
+beats one that finds a slightly better energy once.
+\end{enumerate}

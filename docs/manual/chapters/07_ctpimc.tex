@@ -1,0 +1,156 @@
+\chapter{Continuous-Time PIMC (\code{ctpimc})}
+\label{ch:ctpimc}
+
+The fourth engine removes the Trotter discretisation altogether: it samples
+the path integral directly in \emph{continuous} imaginary time, representing
+each spin as a piecewise-constant \emph{worldline} on the circle
+$[0,\beta)$. There is no Trotter error, and the cluster updates it employs
+mix particularly well in the strongly quantum (large-$\Gamma$) regime. The
+implementation builds on D-Wave's \code{localPIMC} code (Apache-2.0,
+credited in \code{NOTICE}).
+
+\section{From $M\to\infty$ to worldlines}
+
+Recall the discrete action Eq.~\eqref{eq:action}. Take
+$M\to\infty$ at fixed $\beta$: the slice index becomes a continuous
+imaginary time $\tau\in[0,\beta)$ and each site's spin becomes a function
+$s_i(\tau)\in\{-1,+1\}$, periodic in $\tau$, changing value at a finite set
+of \emph{kinks} (domain walls in time). In this limit:
+
+\begin{itemize}
+\item The classical term becomes an integral,
+$\frac{\beta}{M}\sum_t\Ecl(s^t)\;\longrightarrow\;\int_0^\beta
+\Ecl\bigl(s(\tau)\bigr)\,d\tau$.
+\item The Trotter bonds become a \emph{kink fugacity}: each kink on a
+worldline carries a weight $\propto\Gamma\,d\tau$, i.e.\ in the absence of
+couplings the kinks of site $i$ form a \emph{Poisson process} of rate
+$\Gamma$ on the time circle.
+\end{itemize}
+
+\begin{keyeq}[Continuous-time path-integral weight]
+\begin{equation}
+Z=\sum_{\text{worldline configs}}
+\;\Gamma^{\,K}\,
+\exp\!\left[-\int_0^\beta \Ecl\bigl(s(\tau)\bigr)\,d\tau\right],
+\end{equation}
+where $K$ is the total number of kinks and the ``sum'' is over all
+piecewise-constant periodic $\{s_i(\tau)\}$.
+\end{keyeq}
+
+Large $\Gamma$ favours many kinks (strong quantum fluctuation, rapidly
+flapping worldlines); $\Gamma\to0$ suppresses kinks and worldlines freeze
+into constants --- the classical configurations.
+
+\section{Cluster updates on worldlines}
+
+The engine updates worldlines with Swendsen--Wang-style cluster moves over
+worldline \emph{segments} (the intervals between kinks): segments of
+neighbouring sites are stochastically bound together according to the
+couplings acting during their overlap in time, and bound clusters are
+flipped as a unit. Kinks are created and removed in the process, so both the
+spin values and the kink structure are resampled. This is the
+continuous-time analogue of the discrete SW move of
+Section~\ref{sec:sw-moves}, without any discretisation scale.
+
+Two knobs shape the proposals:
+\begin{itemize}
+\item \code{qubits\_per\_update} --- how many sites participate in one
+cluster proposal (1 = single-site updates);
+\item \code{qubits\_per\_chain} --- chain length for the multi-site chain
+updates used by the lattice mode.
+\end{itemize}
+
+\section{General mode}
+
+For arbitrary \code{DenseIsing}/\code{SparseIsing} problems the annealer
+follows a standard $(\beta,\Gamma)$ schedule. At each schedule step the
+couplings are rescaled to the dimensionless combinations the sampler
+consumes,
+\begin{equation}
+\beta J_{ij},\qquad \beta h_i,\qquad \beta\Gamma ,
+\end{equation}
+then \code{sweeps\_per\_beta} cluster sweeps are run and the classical
+projection of the current worldlines is recorded. Reported energies are
+converted back to the \emph{original} Ising units (not scaled by $\beta$).
+
+\begin{pycode}
+import numpy as np
+from qanneal import DenseIsing, SQASchedule, CTPIMCAnnealer
+
+h = np.array([0.2, -0.3, 0.1])
+J = np.array([[0.0, -1.0, 0.2],
+              [-1.0, 0.0, 0.5],
+              [ 0.2, 0.5, 0.0]])
+ising = DenseIsing(h, J)
+
+schedule = SQASchedule.from_vectors(
+    betas  = np.linspace(0.5, 4.0, 40).tolist(),
+    gammas = np.linspace(2.0, 0.05, 40).tolist(),
+)
+annealer = CTPIMCAnnealer(ising, schedule,
+                          qubits_per_update=1, qubits_per_chain=1)
+res = annealer.run(sweeps_per_beta=50, reads=4)
+print(res.best_energy)
+\end{pycode}
+
+Through the high-level interface:
+
+\begin{pycode}
+result = solve(ising, method="ctpimc", reads=8,
+               ctpimc_qubits_per_update=1)
+\end{pycode}
+
+\begin{warnbox}[$\Gamma$ must stay positive]
+The continuous-time weight is singular at $\Gamma=0$ (zero kink rate: the
+sampler cannot move). End the schedule at a small positive value
+(e.g.\ $10^{-3}$), never exactly zero. When building tuned schedules for
+CT-PIMC, pass \code{gamma\_end\_scale=0.04} to
+\code{auto\_schedule\_sqa\_tuned} so the final $\Gamma$ is near-zero for a
+clean classical projection, yet finite.
+\end{warnbox}
+
+\section{Lattice mode}
+
+A second constructor reproduces the cylindrical-lattice experiments the
+underlying sampler was designed for (triangular and square-octagonal
+geometries):
+
+\begin{pycode}
+from qanneal import CTPIMCAnnealer
+
+annealer = CTPIMCAnnealer(
+    Lperiodic=12,          # lattice period (multiple of 6)
+    inv_temp_over_J=2.0,   # beta / J
+    gamma_over_J=0.6,      # Gamma / J
+    initial_condition=0,   # 0 random, 1 ferro, -1 antiferro
+    qubits_per_update=1,
+    qubits_per_chain=1,
+)
+res = annealer.run(sweeps_per_beta=32768)
+\end{pycode}
+
+Here temperatures and fields are expressed in units of the lattice coupling
+$J$, and reported energies are likewise in units of $J$.
+
+\section{CT-PIMC versus SQA}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \textbf{SQA (Chapter~\ref{ch:sqa})} & \textbf{CT-PIMC}\\
+\midrule
+Imaginary time & $M$ discrete slices & continuous\\
+Systematic error & $O(\beta^2\Gamma^2/M)$ Trotter error & none\\
+Elementary move & spin / worldline / SW segment & worldline-segment clusters\\
+High-$\Gamma$ mixing & needs large $M$ & natural regime\\
+Replica / PT structure & yes (\code{sqapt}) & no\\
+Sweep-level observers & yes & no\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Use CT-PIMC when you want discretisation-free sampling closest in spirit to
+physical-annealer statistics; use SQA/SQAPT when you need the replica
+machinery, adaptive $\Jp$ schedules, or detailed observer traces. Neither
+dominates the other on all problems.

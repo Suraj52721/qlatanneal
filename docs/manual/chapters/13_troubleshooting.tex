@@ -1,0 +1,144 @@
+\chapter{Tuning Guide and Troubleshooting}
+\label{ch:tuning}
+
+\section{Which method, which knobs --- a decision guide}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{4.6cm}p{3.1cm}p{5.6cm}@{}}
+\toprule
+\textbf{Situation} & \textbf{Method} & \textbf{First knobs}\\
+\midrule
+Baseline / smooth landscape / very large sparse $n$ &
+\code{sa} & tuned \code{mode}, \code{reads}\\
+Tall narrow barriers, moderate $n$ &
+\code{sqa} & \code{trotter\_slices}, \code{worldline\_sweeps}\\
+Rugged, multi-modal, hard instances &
+\code{sqapt} & \code{replicas}, \code{cluster\_sweeps=1}\\
+Best quality at fixed budget, favourable regime
+($J_{\mathrm{rms}}\gtrsim3$) &
+\code{sqa}/\code{sqapt}, \code{schedule\_type} \code{="optimal"} &
+\code{optimal\_num\_steps}, \code{replicas>=4}\\
+Discretisation-free QA statistics &
+\code{ctpimc} & \code{sweeps\_per\_beta}, $\Gamma_{\text{end}}$ small but
+$>0$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Systematic tuning, in order}
+
+\begin{enumerate}
+\item \textbf{Reads before sweeps.} Doubling \code{reads} is embarrassingly
+parallel and attacks run-to-run variance directly; double sweep counts only
+when single-read traces show the anneal is \emph{unconverged} (energy still
+falling at the last step).
+\item \textbf{Schedule mode.} \code{fast} $\to$ \code{balanced} $\to$
+\code{accurate}: each step roughly doubles schedule length and tightens the
+final acceptance target.
+\item \textbf{SQA moves.} Keep the ratio of \code{sweeps\_per\_beta} to
+\code{worldline\_sweeps} around $10{:}1$; add
+\code{cluster\_sweeps=1} when late-anneal traces plateau above the best
+known energy (a stiffness symptom, Section~\ref{sec:sw-moves}).
+\item \textbf{Trotter slices.} Raise $M$ (32 $\to$ 64) only if the spread of
+per-slice energies remains large at the end of the run --- that spread is the
+observable Trotter-error signature.
+\item \textbf{Ladder size (\code{sqapt}).} Grow \code{replicas} until mean
+swap acceptance sits in $0.2$--$0.5$.
+\end{enumerate}
+
+\section{Symptom tables}
+
+\subsection{General}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{4.4cm}p{4.2cm}p{4.6cm}@{}}
+\toprule
+\textbf{Symptom} & \textbf{Likely cause} & \textbf{Fix}\\
+\midrule
+Energies vary wildly across reads & rugged landscape; schedule too fast &
+more \code{reads}; \code{sqapt}; \code{mode="accurate"}\\
+Energy trace flat from step one & schedule starts too cold & tuned
+schedules; lower \code{beta\_start}\\
+Energy still falling at last step & schedule too short & more steps /
+\code{sweeps\_per\_beta}\\
+Solutions violate constraints & penalty $\lambda$ too small &
+raise $\lambda$ just above the max objective gain
+(Section~\ref{sec:mwis})\\
+Great spins, wrong reported energy & offset $c$ omitted after manual
+conversion & carry $c$ (Eq.~\eqref{eq:qubo2ising}), or let \qv{} convert\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{SQAPT}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{4.4cm}p{4.2cm}p{4.6cm}@{}}
+\toprule
+\textbf{Symptom} & \textbf{Likely cause} & \textbf{Fix}\\
+\midrule
+Swap acceptance $\approx0$ & rungs too far apart & more \code{replicas};
+narrower ladder\\
+Swap acceptance $\approx1$ & rungs redundant & fewer \code{replicas} or
+wider ladder\\
+Cold rung stuck above best energy & too few epochs; mid-ladder bottleneck &
+raise \code{pt\_steps}; inspect \code{final\_energies} profile\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Optimal schedule}
+
+(Details and trace plots in Section~\ref{sec:optimal-diagnostics}.)
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{4.4cm}p{4.2cm}p{4.6cm}@{}}
+\toprule
+\textbf{Symptom} & \textbf{Likely cause} & \textbf{Fix}\\
+\midrule
+$\Jp(t)$ linear, no dwell & degenerate problem class
+($J_{\mathrm{rms}}\ll J_0$) or bad endpoints & run
+\code{sanity\_schedule.py}; pass explicit \code{j\_perp\_end}\\
+$\Delta\Jp$ constant & noisy $\chiB$ & \code{replicas>=4},
+\code{sweeps\_per\_step>=10}\\
+\code{final\_j\_perp} $\ll$ \code{resolved\_j\_perp\_end} & calibration
+failure & inspect debug CSV; more \code{calib\_probes}/\code{calib\_sweeps}\\
+Endpoint reached in a handful of steps (manual $\epst$) & $\epst$ too large
+& use \code{optimal\_eps\_tilde=0.0} (calibration)\\
+$\Jp$ barely moves (manual $\epst$) & $\epst$ too small & same fix ---
+prefer calibration\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Environment issues}
+
+\begin{description}
+\item[\code{ModuleNotFoundError: qanneal.\_qanneal}] Stale or mismatched
+build --- reinstall from the repo root
+(\code{python -m pip install . --no-build-isolation}); don't mix an installed
+copy with a source-tree \code{PYTHONPATH}.
+\item[\code{CTPIMCAnnealer is not available}] The installed build predates
+the CT-PIMC bindings; reinstall from current sources.
+\item[macOS: single-threaded despite OpenMP flag] Apple Clang lacks OpenMP;
+\code{brew install libomp} and rebuild.
+\item[Cluster slowdowns with many workers] Thread oversubscription --- see
+the warning in Chapter~\ref{ch:hpc}; set \code{OMP\_NUM\_THREADS=1} per
+worker or partition cores.
+\end{description}
+
+\section{Reproducibility checklist}
+
+\begin{itemize}
+\item Pass an explicit \code{seed} to \code{solve()} (or
+\code{set\_seed()} on annealers); with fixed seed, replica count and thread
+availability, runs are bitwise reproducible.
+\item Record \code{qanneal.\_\_version\_\_}, the schedule (or tuned-mode
+name + probe seed), and all sweep counts alongside results.
+\item For adaptive runs, archive the debug CSV --- it is the complete audit
+trail of the schedule actually executed.
+\end{itemize}

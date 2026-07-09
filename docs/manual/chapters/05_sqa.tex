@@ -1,0 +1,436 @@
+\chapter{Simulated Quantum Annealing (\code{sqa})}
+\label{ch:sqa}
+
+This chapter contains the theoretical heart of \qv. We introduce the
+transverse-field Ising model, state the adiabatic theorem that motivates
+quantum annealing, and then derive --- in full detail --- the Suzuki--Trotter
+path-integral mapping that turns the quantum partition function into a
+classical Ising model in one extra dimension. The result is the exact
+effective action and acceptance rules executed by the C++
+\code{SQAAnnealer}, including the Trotter coupling
+$\Jp=\tfrac12\ln\coth(\beta\Gamma/M)$ that reappears throughout the rest of
+the manual.
+
+\section{Quantum annealing in one page}
+\label{sec:qa}
+
+Quantum annealing~\cite{kadowaki,farhi} encodes the optimisation problem in
+the \emph{longitudinal} part of a quantum spin Hamiltonian and adds a
+\emph{transverse field} that induces quantum fluctuations:
+
+\begin{keyeq}[Transverse-field Ising model (TFIM)]
+\begin{equation}
+\hat H(\Gamma)
+=\underbrace{\sum_i h_i\,\hat\sigma^z_i+\sum_{i<j}J_{ij}\,\hat\sigma^z_i\hat\sigma^z_j}_{\hat H_{\mathrm{cl}}
+\;\text{(the problem)}}
+\;-\;\Gamma\sum_i \hat\sigma^x_i ,
+\label{eq:tfim}
+\end{equation}
+\end{keyeq}
+
+\noindent where $\hat\sigma^{x,z}_i$ are Pauli operators on spin $i$.
+$\hat H_{\mathrm{cl}}$ is diagonal in the computational ($\sigma^z$) basis
+and its ground state is exactly the Ising optimum we seek. The transverse
+term $-\Gamma\sum_i\hat\sigma^x_i$ flips spins
+($\hat\sigma^x\ket{\pm1}=\ket{\mp1}$) and therefore lets the state
+\emph{tunnel} between classical configurations.
+
+The protocol: start at large $\Gamma$, where the ground state is the trivial
+uniform superposition $\bigotimes_i\tfrac{1}{\sqrt2}(\ket{+1}+\ket{-1})$;
+reduce $\Gamma\to0$ slowly. The \textbf{adiabatic theorem} guarantees that if
+the sweep is slow compared to the inverse square of the spectral gap
+$\Delta_{\mathrm{gap}}(\Gamma)$ (the energy difference between the ground and
+first excited state), the system remains in its instantaneous ground state
+throughout and ends in the classical optimum. The total time required scales
+as
+\begin{equation}
+T \;\gtrsim\; \frac{\max_\Gamma\bigl|\bra{1}\partial_\Gamma\hat H\ket{0}\bigr|}{\min_\Gamma \Delta_{\mathrm{gap}}^2(\Gamma)} ,
+\label{eq:adiabatic}
+\end{equation}
+so the bottleneck is the \emph{minimum gap}, typically encountered at a
+quantum phase transition separating the disordered (large $\Gamma$) phase
+from the ordered (small $\Gamma$) phase. This observation drives the optimal
+schedule of Chapter~\ref{ch:optimal}: sweep slowly \emph{only} near the
+transition.
+
+\begin{physbox}
+Thermal hopping surmounts a barrier of height $B$ at rate
+$\sim\mathrm{e}^{-\beta B}$, indifferent to the barrier's width. Quantum
+tunnelling through a barrier of width $w$ and height $B$ proceeds at rate
+$\sim\mathrm{e}^{-c\,w\sqrt{B}\,/\Gamma}$: it pays for \emph{width}, not
+height. Rugged landscapes whose minima are separated by tall-but-thin walls
+are therefore the natural habitat of quantum annealing --- and of its
+classical-hardware simulation, SQA.
+\end{physbox}
+
+\section{The Suzuki--Trotter mapping, in full}
+\label{sec:trotter}
+
+Real-time simulation of Eq.~\eqref{eq:tfim} on a CPU is exponentially
+expensive. \emph{Simulated} quantum annealing instead samples the quantum
+system's \emph{thermal equilibrium} at inverse temperature $\beta$ ---
+the density matrix $\mathrm{e}^{-\beta\hat H}/Z$ --- using a mapping to a
+classical model that Monte Carlo can handle. We now derive it.
+
+\subsection{Step 1: split the exponential}
+
+The partition function is $Z=\Tr\,\mathrm{e}^{-\beta\hat H}$ with
+$\hat H=\hat H_{\mathrm{cl}}+\hat H_q$,
+$\hat H_q=-\Gamma\sum_i\hat\sigma^x_i$. Since
+$[\hat H_{\mathrm{cl}},\hat H_q]\ne0$ we cannot factorise the exponential
+exactly, but we can \emph{Trotterise}: write
+$\mathrm{e}^{-\beta\hat H}=\bigl(\mathrm{e}^{-\frac{\beta}{M}\hat H}\bigr)^M$
+and apply the Lie--Trotter splitting to each thin slice,
+\begin{equation}
+\mathrm{e}^{-\frac{\beta}{M}(\hat H_{\mathrm{cl}}+\hat H_q)}
+=\mathrm{e}^{-\frac{\beta}{M}\hat H_{\mathrm{cl}}}\,
+ \mathrm{e}^{-\frac{\beta}{M}\hat H_q}
+ +O\!\left(\frac{\beta^2}{M^2}\bigl\|[\hat H_{\mathrm{cl}},\hat H_q]\bigr\|\right).
+\label{eq:trotter-split}
+\end{equation}
+The neglected term is the \emph{Trotter error}; it vanishes as
+$M\to\infty$ like $O((\beta/M)^2)$ per slice, i.e.\ $O(\beta^2/M)$ overall.
+$M$ is the \code{trotter\_slices} parameter.
+
+\subsection{Step 2: insert complete sets of classical states}
+
+Insert the identity
+$\mathbb 1=\sum_{s}\ket{s}\bra{s}$ (sum over all $2^n$ classical spin
+configurations) between every pair of factors. Writing $s^t$ for the
+configuration inserted at slot $t=1,\dots,M$ and using cyclicity of the
+trace ($s^{M+1}\equiv s^1$, \emph{periodic boundary in imaginary time}):
+\begin{equation}
+Z\;\approx\;\sum_{s^1,\dots,s^M}\;\prod_{t=1}^{M}
+\underbrace{\bra{s^t}\mathrm{e}^{-\frac{\beta}{M}\hat H_{\mathrm{cl}}}\ket{s^t}}_{\displaystyle
+\mathrm{e}^{-\frac{\beta}{M}\Ecl(s^t)}}
+\;\underbrace{\bra{s^t}\mathrm{e}^{\frac{\beta\Gamma}{M}\sum_i\hat\sigma^x_i}\ket{s^{t+1}}}_{\text{transverse matrix element}} .
+\label{eq:z-inserted}
+\end{equation}
+The classical factor is diagonal, giving the Boltzmann weight of each slice
+at the \emph{reduced} inverse temperature $\beta/M$. The transverse factor
+factorises over sites, so we only need the $2\times2$ single-spin matrix
+element.
+
+\subsection{Step 3: the single-spin transfer matrix}
+
+Let $a=\beta\Gamma/M$. Using
+$\mathrm{e}^{a\hat\sigma^x}=\cosh a\,\mathbb 1+\sinh a\,\hat\sigma^x$:
+\begin{equation}
+\bra{s}\mathrm{e}^{a\hat\sigma^x}\ket{s'}
+=\begin{cases}
+\cosh a & s=s'\\
+\sinh a & s\ne s' .
+\end{cases}
+\end{equation}
+We now rewrite this as a classical Ising bond between the same site in
+adjacent slices, i.e.\ find $\Lambda$ and $\Jp$ such that
+$\bra{s}\mathrm{e}^{a\hat\sigma^x}\ket{s'}=\Lambda\,\mathrm{e}^{\Jp\,ss'}$.
+Matching the two cases ($ss'=+1$ and $ss'=-1$):
+\begin{equation}
+\Lambda\,\mathrm{e}^{\Jp}=\cosh a,\qquad
+\Lambda\,\mathrm{e}^{-\Jp}=\sinh a
+\quad\Longrightarrow\quad
+\mathrm{e}^{2\Jp}=\coth a,\qquad
+\Lambda^2=\sinh a\cosh a=\tfrac12\sinh 2a .
+\end{equation}
+
+\begin{keyeq}[The Trotter coupling]
+\begin{equation}
+\Jp(\beta,\Gamma,M)\;=\;\frac12\,\ln\coth\!\Bigl(\frac{\beta\Gamma}{M}\Bigr)
+\;=\;\frac12\,\ln\!\frac{1}{\tanh(\beta\Gamma/M)}\;>\;0 .
+\label{eq:jperp}
+\end{equation}
+\end{keyeq}
+
+$\Jp$ is a \emph{ferromagnetic} bond along imaginary time (it rewards
+$s^t_i=s^{t+1}_i$; note the effective action below carries it with a minus
+sign). Its two limits define the whole phenomenology:
+\begin{itemize}
+\item $\Gamma\to\infty$ (strong quantum fluctuations): $a$ large,
+$\coth a\to1$, $\Jp\to0$ --- slices decouple, worldlines flap freely.
+\item $\Gamma\to0^+$ (classical limit): $a\to0$, $\Jp\to\infty$ --- slices
+lock together into identical copies of one classical configuration.
+\end{itemize}
+The Python helper \code{j\_perp\_from\_beta\_gamma(beta, gamma,
+trotter\_slices)} evaluates Eq.~\eqref{eq:jperp} directly.
+
+\begin{warnbox}[Direction of the ramp]
+Because $\Jp$ is monotonically \emph{decreasing} in $\Gamma$, an annealing
+run that lowers $\Gamma$ corresponds to \emph{raising} $\Jp$. All
+\qv{} adaptive-schedule APIs are parameterised by $\Jp$ and therefore ramp it
+\emph{upward}, from \code{j\_perp\_start} (quantum end) to
+\code{j\_perp\_end} (classical end). Keep this inversion in mind when reading
+traces.
+\end{warnbox}
+
+\subsection{Step 4: the effective classical action}
+
+Substituting both factors into Eq.~\eqref{eq:z-inserted}:
+
+\begin{keyeq}[SQA effective action]
+\begin{equation}
+Z\;\approx\;C\!\!\sum_{\{s^t_i\}}\mathrm{e}^{-S[s]},
+\qquad
+S[s]\;=\;\frac{\beta}{M}\sum_{t=1}^{M}\Ecl(s^t)
+\;-\;\Jp\sum_{t=1}^{M}\sum_{i=1}^{n}s^t_i\,s^{t+1}_i ,
+\label{eq:action}
+\end{equation}
+with $C=\Lambda^{nM}$ an irrelevant constant and periodic slices
+$s^{M+1}\equiv s^1$.
+\end{keyeq}
+
+This is a purely classical Ising model on $n\times M$ spins: $M$ copies
+(``Trotter slices'') of the original problem, each internally coupled by the
+rescaled problem couplings $\frac{\beta}{M}J_{ij},\frac{\beta}{M}h_i$, and
+neighbouring slices tied site-by-site with strength $\Jp$. Quantum
+statistics at inverse temperature $\beta$ became classical statistics of a
+$(d{+}1)$-dimensional system at unit temperature. Metropolis sampling of
+$\mathrm{e}^{-S}$ (Chapter~\ref{ch:statmech}, with $S$ in place of
+$\beta E$) is exact for this effective model.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=0.92,
+  spin/.style={circle,draw=qnavy,fill=qnavy!12,inner sep=1.6pt,minimum size=8pt},
+  intra/.style={qblue!75,thick},
+  inter/.style={qteal,very thick,densely dashed}]
+% slices: 4 slices x 5 spins
+\foreach \t in {0,1,2,3}{
+  \begin{scope}[shift={(\t*3.1,0)}]
+    \foreach \i in {0,...,4}{ \node[spin] (s\t\i) at (0,\i*0.85) {}; }
+    % intra-slice couplings (a few representative)
+    \draw[intra] (s\t0) to[bend right=35] (s\t2);
+    \draw[intra] (s\t1) to[bend left=35] (s\t4);
+    \draw[intra] (s\t2) -- (s\t3);
+    \draw[intra] (s\t0) -- (s\t1);
+    \node[below=2mm of s\t0,font=\scriptsize\sffamily\color{qgray}]
+      {slice $t{=}\pgfmathparse{int(\t+1)}\pgfmathresult$};
+  \end{scope}}
+% inter-slice bonds
+\foreach \t/\tn in {0/1,1/2,2/3}{
+  \foreach \i in {0,...,4}{ \draw[inter] (s\t\i) -- (s\tn\i); }}
+% periodic wrap
+\foreach \i in {0,...,4}{
+  \draw[inter,opacity=0.45] (s3\i) .. controls +(1.2,0.55) and +(-1.2,0.55) .. (s0\i);}
+% labels
+\node[font=\small\sffamily\color{qblue}] at (1.55,4.6)
+  {$\dfrac{\beta}{M}J_{ij}$ \; (problem couplings, within slice)};
+\node[font=\small\sffamily\color{qteal}] at (7.75,-1.35)
+  {$-\Jp\, s^t_i s^{t+1}_i$ \; (Trotter bonds along imaginary time, periodic)};
+\end{tikzpicture}
+\caption{The Suzuki--Trotter mapping: $M$ replicas of the classical problem
+(here $M{=}4$, $n{=}5$) coupled site-by-site along a periodic imaginary-time
+ring. The row of same-site spins across all slices is that site's
+\emph{worldline}.}
+\label{fig:trotter}
+\end{figure}
+
+\subsection{Trotter error and choosing $M$}
+
+The systematic error of the discretisation is $O\!\left((\beta\Gamma/M)^2\right)$
+per slice. In practice:
+\begin{itemize}
+\item $M=16$--$32$ (the default is 32) suffices for optimisation use, where
+we care about ground-state \emph{identification} rather than unbiased
+thermodynamics.
+\item Increase $M$ if the per-slice energies disagree strongly with each
+other late in the anneal (a Trotter-error signature), or when running at
+large $\beta\Gamma$.
+\item Memory and time grow linearly in $M$; the OpenMP path parallelises
+over replicas and slices, softening the wall-clock cost.
+\item \code{continuous\_time\_slices > 0} overrides $M$ with a much larger
+value to approximate the continuous-time limit within the discrete engine;
+the genuinely continuous algorithm is Chapter~\ref{ch:ctpimc}.
+\end{itemize}
+
+\section{Monte Carlo moves on the Trotter system}
+\label{sec:sqa-moves}
+
+The \code{SQAAnnealer} mixes three move types, each preserving detailed
+balance for the action Eq.~\eqref{eq:action}. Every acceptance test is
+$\min(1,\mathrm{e}^{-\Delta S})$; what differs is the update and its
+$\Delta S$.
+
+\subsection{Single-spin (slice) moves}
+
+Flip one spin $s^t_i$. The action change has a classical part within the
+slice and a quantum part from the two adjacent time-bonds:
+\begin{keyeq}[Single-spin action change]
+\begin{equation}
+\Delta S=\frac{\beta}{M}\,\Delta\Ecl
+\;+\;2\,\Jp\,s^t_i\bigl(s^{t-1}_i+s^{t+1}_i\bigr),
+\qquad \Delta\Ecl=-2\,s^t_i f^t_i ,
+\label{eq:sqa-flip}
+\end{equation}
+\end{keyeq}
+where $f^t_i$ is the cached local field of slice $t$
+(Eq.~\eqref{eq:deltaE}). Both pieces are $O(1)$; the implementation keeps
+one local-field cache per (replica, slice). \code{sweeps\_per\_beta} counts
+these sweeps.
+
+\subsection{Worldline moves}
+
+Flip site $i$ in \emph{every} slice simultaneously
+($s^t_i\to-s^t_i\ \forall t$). All imaginary-time bonds
+$s^t_is^{t+1}_i$ are products of two flipped spins and are therefore
+\emph{invariant}: the Trotter term cancels exactly, leaving
+\begin{equation}
+\Delta S_{\text{worldline}}=\frac{\beta}{M}\sum_{t=1}^{M}\Delta\Ecl^{(t)} .
+\label{eq:worldline}
+\end{equation}
+Worldline moves are the quantum analogue of a classical single-spin flip and
+are essential late in the anneal: when $\Jp$ is large the slices are locked
+and single-slice flips are strongly suppressed
+($\Delta S\approx4\Jp$), while a worldline flip pays no Trotter penalty at
+all. \code{worldline\_sweeps} (default 5 in \code{solve()}) counts these.
+
+\subsection{Swendsen--Wang cluster moves along imaginary time}
+\label{sec:sw-moves}
+
+Between the two extremes sits the cluster move: flip a \emph{contiguous
+segment} of a worldline. Segments are grown stochastically with the
+Fortuin--Kasteleyn rule specialised to the 1-D ferromagnetic time-chain of
+coupling $\Jp$: starting from a random seed $(i,t)$, extend the cluster
+across an aligned time-bond with the \emph{join probability}
+
+\begin{keyeq}[Cluster join probability]
+\begin{equation}
+p_{\text{join}}=1-\mathrm{e}^{-2\Jp}.
+\label{eq:joinprob}
+\end{equation}
+\end{keyeq}
+
+Bonds inside the cluster then flip for free (the FK construction makes the
+grown-bond factor cancel from the acceptance ratio); the remaining action
+change --- the classical part in every touched slice plus the two
+\emph{boundary} time-bonds where the cluster ends --- is Metropolis-tested:
+\begin{equation}
+\Delta S_{\text{cluster}}
+=\frac{\beta}{M}\!\!\sum_{t\in\text{cluster}}\!\!\Delta\Ecl^{(t)}
+\;+\;2\,\Jp\!\!\sum_{\text{boundary bonds}}\!\! s\,s' .
+\end{equation}
+Cluster moves interpolate smoothly between single-spin flips (clusters of
+size 1 when $\Jp$ is small) and full worldline flips (system-spanning
+clusters when $\Jp$ is large), and dramatically improve mixing in stiff,
+strongly-coupled regimes. \code{cluster\_sweeps} (default 0) counts these;
+setting it $>0$ is referred to as the \emph{+SW} variant of an engine.
+
+\begin{notebox}[Which moves to enable]
+A robust general-purpose mix is
+\code{sweeps\_per\_beta=20--60}, \code{worldline\_sweeps=3--5},
+\code{cluster\_sweeps=0}; add \code{cluster\_sweeps=1} for strongly
+frustrated instances or whenever convergence visibly stalls at late steps.
+All three counters multiply runtime linearly.
+\end{notebox}
+
+\section{The annealing loop and replicas}
+
+Putting it together, \code{SQAAnnealer.run()} executes, for each schedule
+step $(\beta_k,\Gamma_k)$:
+\begin{enumerate}
+\item recompute $\Jp(\beta_k,\Gamma_k,M)$ (Eq.~\eqref{eq:jperp}) and the
+slice temperature factor $\beta_k/M$;
+\item run the configured number of slice, worldline, and cluster sweeps with
+the acceptance rules of Section~\ref{sec:sqa-moves};
+\item measure the energy of \emph{every slice} of every replica; record the
+best classical projection seen so far.
+\end{enumerate}
+
+The \code{replicas} parameter runs $R$ independent copies of the whole
+Trotter system inside one call (OpenMP-parallel, one RNG stream per replica).
+Besides restart statistics, replicas are what powers the adaptive schedule's
+susceptibility estimator (Chapter~\ref{ch:optimal}), which pools samples
+across them.
+
+At the end, the returned \code{best\_state} is the best single \emph{slice}
+ever observed --- the ``classical projection'' of the quantum state --- with
+\code{best\_energy} its true classical energy $\Ecl$, and
+\code{energy\_trace} the per-step mean energy.
+
+\section{Usage}
+
+\subsection{One-call interface}
+
+\begin{pycode}
+from qanneal import solve
+
+result = solve(
+    ising,
+    method="sqa",
+    reads=16,             # independent restarts
+    trotter_slices=32,    # M
+    replicas=4,           # parallel Trotter systems per read
+    sweeps_per_beta=60,
+    worldline_sweeps=4,
+    cluster_sweeps=1,     # enable SQA+SW
+    seed=42,
+)
+print(result.best_energy, result.best_sample)
+\end{pycode}
+
+\subsection{Explicit schedules}
+
+If no schedule is given, \code{solve()} builds a tuned one
+(Section~\ref{sec:sqa-tuned}). To control it explicitly:
+
+\begin{pycode}
+import numpy as np
+from qanneal import SQASchedule, SQAAnnealer
+
+schedule = SQASchedule.from_vectors(
+    betas  = np.linspace(0.1, 5.0, 80).tolist(),
+    gammas = np.geomspace(5.0, 0.01, 80).tolist(),   # geometric decay!
+)
+ann = SQAAnnealer(ising, schedule, trotter_slices=32, replicas=4)
+ann.set_seed(7)
+res = ann.run(sweeps_per_beta=60, worldline_sweeps=4, cluster_sweeps=1)
+print(res.best_energy)
+\end{pycode}
+
+\begin{warnbox}[Use geometric $\Gamma$ decay]
+$\Jp$ depends on $\Gamma$ logarithmically at small $\Gamma$
+(Eq.~\eqref{eq:jperp}), so a \emph{linear} $\Gamma$ ramp spends most of its
+steps in a narrow band of $\Jp$ and rushes the physically important region.
+Geometric decay (\code{np.geomspace}) distributes steps roughly uniformly in
+$\ln\Gamma$, i.e.\ far more evenly in $\Jp$.
+\end{warnbox}
+
+\subsection{Problem-adaptive tuned SQA schedules}
+\label{sec:sqa-tuned}
+
+\code{auto\_schedule\_sqa\_tuned(problem, mode=...)} extends the SA tuner of
+Section~\ref{sec:tuned-schedules}: the same random-flip probe estimates the
+energy scale $\Delta$, then
+\begin{equation}
+\Gamma_{\text{start}}=m_\Gamma\,\Delta,\qquad
+\Gamma_{\text{end}}=\Gamma_{\text{start}}\cdot r_\Gamma\cdot
+\code{gamma\_end\_scale},
+\end{equation}
+with $m_\Gamma\in\{2.0,\,3.0,\,4.5\}$ for
+\code{fast}/\code{balanced}/\code{accurate} and geometric spacing in between.
+$\beta$ ramps exactly as in the SA tuner. Setting
+$\Gamma_{\text{start}}$ a few times the flip scale guarantees the run
+actually begins in the quantum-disordered phase.
+
+\begin{pycode}
+from qanneal import auto_schedule_sqa_tuned
+schedule = auto_schedule_sqa_tuned(ising, mode="balanced")
+\end{pycode}
+
+\section{Parameter summary}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{8.6cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Default} & \textbf{Meaning}\\
+\midrule
+\code{trotter\_slices} & 32 & $M$; more slices $\Rightarrow$ less Trotter error, linearly more memory/time.\\
+\code{replicas} & 1 & Independent Trotter systems per run (OpenMP-parallel). Use $\geq4$ with the optimal schedule.\\
+\code{sweeps\_per\_beta} & 20 & Single-spin sweeps per schedule step.\\
+\code{worldline\_sweeps} & 5 & Whole-worldline flips per step; essential at large $\Jp$.\\
+\code{cluster\_sweeps} & 0 & Swendsen--Wang segment flips per step ($>0$ = SQA+SW).\\
+\code{continuous\_time\_slices} & 0 & If $>0$, overrides $M$ to approximate continuous time.\\
+\bottomrule
+\end{tabular}
+\end{center}

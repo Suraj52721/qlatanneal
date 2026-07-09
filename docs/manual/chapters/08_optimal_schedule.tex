@@ -1,0 +1,520 @@
+\chapter{The Optimal Adaptive \texorpdfstring{$\Jp$}{J-perp} Schedule}
+\label{ch:optimal}
+
+Standard SQA follows a pre-designed $\Gamma(t)$ ramp fixed before the run
+begins. Such a schedule cannot react to the system it is driving: it may
+rush through the quantum critical region (exciting the system and spoiling
+the solution) while wasting steps in regions where nothing interesting
+happens. This chapter derives \qv's alternative: a schedule that
+\emph{measures} how critical the simulated system currently is --- through
+the bond susceptibility $\chiB$ --- and paces the Trotter coupling $\Jp$
+accordingly. It is available for \code{sqa} and \code{sqapt} (with or
+without SW cluster moves) via \code{schedule\_type="optimal"}.
+
+\section{Local adiabaticity: the Roland--Cerf condition}
+\label{sec:roland-cerf}
+
+The adiabatic theorem (Section~\ref{sec:qa}) bounds the \emph{total} runtime
+by the worst-case gap, Eq.~\eqref{eq:adiabatic}. Roland and
+Cerf~\cite{rolandcerf} sharpened this into a \emph{local} condition: rather
+than sweeping the control parameter uniformly, demand that the
+\emph{instantaneous} transition probability stay uniformly small. For a
+control parameter $\lambda(t)$ this reads
+\begin{equation}
+\Bigl|\frac{d\lambda}{dt}\Bigr|
+\;\le\;\eps\,
+\frac{\Delta_{\mathrm{gap}}^2(\lambda)}{\bigl|\bra{1}\partial_\lambda\hat H\ket{0}\bigr|}
+\;\;\sim\;\;\eps\,\Delta_{\mathrm{gap}}^2(\lambda),
+\label{eq:local-adiabatic}
+\end{equation}
+with $\eps\ll1$ a fixed error budget. The schedule then \emph{slows down
+exactly where the gap is small} --- near the quantum critical point --- and
+accelerates where the gap is large. For the archetypal Grover problem this
+converts the naive $O(1/\Delta_{\min}^2)$ total time into the provably
+optimal $O(1/\Delta_{\min})$; generically it redistributes a fixed time
+budget in the provably best way.
+
+\subsection{From the gap to a measurable quantity}
+
+Eq.~\eqref{eq:local-adiabatic} is not directly usable: the gap of an
+$n$-spin system is unknown. But near a second-order quantum phase
+transition, \emph{finite-size scaling} links the gap to correlation
+functions that Monte Carlo can measure. With correlation length $\xi$,
+dynamical exponent $z$ and anomalous dimension $\eta$:
+\begin{equation}
+\Delta_{\mathrm{gap}}\sim\xi^{-z},
+\qquad\qquad
+\chi\;\sim\;\xi^{\,2-\eta},
+\end{equation}
+where $\chi$ is the susceptibility of the operator driving the transition.
+Eliminating $\xi$:
+\begin{equation}
+\Delta_{\mathrm{gap}}^2 \;\sim\; \chi^{-2z/(2-\eta)} .
+\end{equation}
+In the Suzuki--Trotter representation the natural control parameter is the
+Trotter coupling $\Jp$ (Eq.~\eqref{eq:jperp}) and the natural susceptibility
+is that of the quantity $\Jp$ multiplies in the action
+Eq.~\eqref{eq:action-cb}: the total imaginary-time \textbf{bond sum}
+\begin{keyeq}[Bond sum and bond susceptibility]
+\begin{equation}
+B=\sum_{t=1}^{M}\sum_{i=1}^{n} s^t_i\,s^{t+1}_i,
+\qquad\qquad
+\chiB=\operatorname{Var}(B)=\langle B^2\rangle-\langle B\rangle^2 .
+\label{eq:chiB}
+\end{equation}
+\end{keyeq}
+$B$ plays the role of the conjugate ``order parameter density'' of the
+transverse-field-driven transition; $\chiB$ is cheap to track (see
+Section~\ref{sec:chib-est}) and peaks near the quantum transition.
+Substituting into Eq.~\eqref{eq:local-adiabatic} and absorbing an extra
+$+\tfrac12$ in the exponent that accounts for the statistical width of the
+finite-sample variance estimator, the discrete update per adaptive step
+becomes
+
+\begin{keyeq}[Adaptive update law]
+\begin{equation}
+\Delta\Jp \;=\; \epst\cdot\chiB^{-\alpha},
+\qquad\qquad
+\alpha=\frac{z}{2-\eta}+\frac12 .
+\label{eq:update-law}
+\end{equation}
+\end{keyeq}
+
+For the 1-D quantum Ising universality class ($z=1$, $\eta=\tfrac14$):
+$\alpha=\frac{1}{7/4}+\frac12=\frac{4}{7}+\frac12=\frac{15}{14}\approx1.071$
+--- the library default (\code{optimal\_alpha}). For the 2-D class use
+$\alpha=7/4$; for mean-field (Sherrington--Kirkpatrick-like) problems
+$\alpha\approx1$ is a reasonable, if tentative, choice. In practice
+$15/14$ is a robust default even when the true universality class is
+unknown, because the calibration below makes the schedule's overall pace
+independent of moderate errors in $\alpha$.
+
+\begin{physbox}
+For this model $\chiB$ is \emph{large near the quantum transition and
+collapses toward zero deep in the ordered (classical) phase} --- it peaks
+rather than diverging. Through Eq.~\eqref{eq:update-law} the schedule
+therefore takes small steps ($\chiB$ large) in the critical window and large
+steps ($\chiB$ small) once the system has ordered: a characteristic
+\textbf{fast--slow--fast} trajectory in $\Jp$, dwelling exactly where
+diabatic errors would otherwise be created.
+\end{physbox}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.56\textwidth,height=5.4cm,
+  xlabel={adaptive step $t$},ylabel={$\Jp$},
+  axis lines=left,ticks=none,
+  every axis label/.append style={font=\small},clip=false]
+\addplot[qnavy,very thick,smooth] coordinates {
+  (0,0.1) (0.05,2.5) (0.10,4.8) (0.15,6.8) (0.20,8.4) (0.25,9.6)
+  (0.30,10.4) (0.35,10.9) (0.40,11.2) (0.45,11.45) (0.50,11.7)
+  (0.55,11.95) (0.60,12.3) (0.65,12.9) (0.70,13.9) (0.75,15.3)
+  (0.80,17.0) (0.85,18.9) (0.90,20.8) (0.95,22.6) (1.0,24.0)};
+\node[font=\scriptsize\sffamily\color{qgray},anchor=west] at (axis cs:0.47,8.2)
+  {dwell near $\Jp^{c}$};
+\draw[qamber,densely dashed] (axis cs:0.30,0) -- (axis cs:0.30,22);
+\draw[qamber,densely dashed] (axis cs:0.66,0) -- (axis cs:0.66,22);
+\node[font=\scriptsize\sffamily\color{qamber!80!black}] at (axis cs:0.48,23.2)
+  {critical window};
+\end{axis}
+\begin{scope}[shift={(8.0,0)}]
+\begin{axis}[
+  width=0.42\textwidth,height=5.4cm,
+  xlabel={$\Jp$},ylabel={$\chiB$},
+  axis lines=left,ticks=none,
+  every axis label/.append style={font=\small},
+  domain=0:1,samples=120]
+\addplot[qteal,very thick] {exp(-((x-0.42)^2)/(2*0.018)) + 0.06*exp(-3*x)};
+\node[font=\scriptsize\sffamily\color{qgray}] at (axis cs:0.42,1.12)
+  {peak at $\Jp^{c}\!\approx\! J_{\mathrm{rms}}$};
+\end{axis}
+\end{scope}
+\end{tikzpicture}
+\caption{Schematic of a healthy adaptive run. Left: the realised
+$\Jp(t)$ is fast--slow--fast, dwelling in the critical window. Right: the
+bond susceptibility $\chiB(\Jp)$ that drives the pacing, peaking near the
+quantum transition and collapsing in the ordered phase.}
+\label{fig:fastslow}
+\end{figure}
+
+\section{Budget calibration: fixing the scale of \texorpdfstring{$\epst$}{eps-tilde}}
+\label{sec:calibration}
+
+Eq.~\eqref{eq:update-law} separates cleanly into \emph{shape} and
+\emph{scale}: the factor $\chiB^{-\alpha}$ dictates \emph{where} the schedule
+is slow or fast, while $\epst$ only sets the overall pace. Choosing
+$\epst$ by hand is fragile: since $\chiB$'s magnitude grows with $n$, $M$
+and the coupling distribution, a value that works for one instance can make
+another instance's schedule either leap across its whole range in a few
+steps or --- the more insidious failure --- \emph{freeze}, advancing $\Jp$ so
+slowly that the run effectively anneals at constant coupling. Neither
+failure announces itself: the run completes and returns an energy.
+
+\qv{} therefore ties $\epst$ to the \emph{step budget}. Treat
+Eq.~\eqref{eq:update-law} as an ODE in continuous step-time,
+$\frac{dJ}{dt}=\epst\,\chiB(J)^{-\alpha}$, and separate variables:
+$dt=\epst^{-1}\chiB(J)^{\alpha}\,dJ$. Requiring the traversal of
+$[J_0,J_{\mathrm{end}}]$ to take \emph{exactly} $T=\code{num\_steps}$ steps,
+\begin{equation}
+T=\frac{1}{\epst}\int_{J_0}^{J_{\mathrm{end}}}\chiB(J)^{\alpha}\,dJ
+\end{equation}
+
+\begin{keyeq}[Budget-calibrated adiabaticity scale]
+\begin{equation}
+\epst \;=\; \frac{1}{T}\int_{J_0}^{J_{\mathrm{end}}}\chiB(J)^{\alpha}\,dJ .
+\label{eq:calibrated-eps}
+\end{equation}
+\end{keyeq}
+
+\begin{warnbox}[Sign of the exponent]
+Note the \emph{positive} power $\chiB^{+\alpha}$ inside the integral and the
+$1/T$ prefactor. The superficially plausible alternative
+$\epst=\Delta\Jp/\sum_m\chiB(J_m)^{-\alpha}$ (negative power, no $1/T$) is
+\emph{not} budget-correct when $\chiB$ varies along the range --- it under- or
+over-shoots and can re-freeze the schedule. Eq.~\eqref{eq:calibrated-eps}
+follows uniquely from the separation of variables above.
+\end{warnbox}
+
+\subsection{The pilot pre-pass}
+
+$\chiB(J)$ is not known in advance, so when \code{eps\_tilde}\,$\le0$
+(the default \code{optimal\_eps\_tilde=0.0} requests exactly this)
+\code{run\_optimal} first runs a short \emph{pilot}: it measures $\chiB$ at
+\code{calib\_probes} (default 12) values of $\Jp$ spanning
+$[J_0,J_{\mathrm{end}}]$, using \code{calib\_sweeps} (default 10) sweeps per
+probe with the \emph{same} sampler the real run will use, on scratch states
+so the production run is unbiased. The integral in
+Eq.~\eqref{eq:calibrated-eps} is then evaluated by the midpoint rule over
+the probe grid.
+
+\subsection{The inverse-CDF trajectory}
+
+One more robustness step: rather than integrating
+Eq.~\eqref{eq:update-law} \emph{online} with the noisy within-run $\chiB$
+(whose fluctuations can compound --- a run that momentarily orders faster than
+the pilot predicted sees a small $\chiB$, takes a huge step, and skips the
+rest of the range), the entire trajectory is \emph{precomputed} from the
+pilot profile. Define the cumulative ``adiabatic cost''
+\begin{keyeq}[Inverse-CDF placement of steps]
+\begin{equation}
+G(J)=\int_{J_0}^{J}\chiB(J')^{\alpha}\,dJ' ,
+\qquad\qquad
+J^{(t)}=G^{-1}\!\Bigl(\frac{t}{T-1}\,G(J_{\mathrm{end}})\Bigr),
+\quad t=0,\dots,T-1 .
+\label{eq:inverse-cdf}
+\end{equation}
+\end{keyeq}
+Each step is placed at an equal increment of adiabatic cost. By
+construction --- independent of the shape or scale of $\chiB$ --- the schedule
+(a)~consumes exactly $T$ steps, (b)~reaches $J_{\mathrm{end}}$, and
+(c)~concentrates its steps where $\chiB$ is large. The online $\chiB$ is
+still measured at every step and recorded in \code{chi\_B\_trace} as a
+diagnostic (and, in the debug CSV, as \code{chi\_B\_online}).
+
+A \emph{positive} \code{eps\_tilde} bypasses calibration entirely and drives
+the legacy online update $\Jp\mathrel{+}=\epst\,\chiB^{-\alpha}$ with that
+fixed scale --- retained for reproducibility and for controlled experiments,
+not recommended for production.
+
+\subsection{Fairness of the step budget}
+
+The adaptive run \emph{always} executes all \code{num\_steps} steps; if
+$\Jp$ saturates at $J_{\mathrm{end}}$ early it keeps sweeping at the
+endpoint rather than stopping. Total sweep effort is therefore identical to
+a standard-schedule run of the same length --- any quality difference is
+attributable to the \emph{placement} of the steps, not to extra compute.
+
+\section{Estimating \texorpdfstring{$\chiB$}{chi\_B} without overhead}
+\label{sec:chib-est}
+
+\subsection{Incremental bond tracking}
+
+Recomputing $B$ (Eq.~\eqref{eq:chiB}) from scratch costs $O(nM)$; instead,
+every move type updates it incrementally in $O(1)$ per flip:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{9.1cm}@{}}
+\toprule
+\textbf{Move} & \textbf{Bond-sum change $\Delta B$}\\
+\midrule
+Metropolis flip of $s^t_i$ &
+$\Delta B=-2\,s^t_i\bigl(s^{t-1}_i+s^{t+1}_i\bigr)$ evaluated with the
+\emph{old} spin value --- the two touched time-bonds reverse.\\
+SW cluster flip &
+$\Delta B=-2\sum_{\text{boundary bonds}} s\,s'$ --- only the bonds joining
+the cluster to unflipped spins change; interior bonds are invariant.\\
+Worldline flip &
+$\Delta B=0$ --- every bond of the worldline is a product of two flipped
+spins.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+After each full sweep the current $B$ is appended to the step's sample
+buffer, so $\chiB$ estimation adds essentially zero cost to the run.
+
+\subsection{Pooled variance across sweeps and replicas}
+
+Each adaptive step yields $R\times S$ samples of $B$ ($R$ replicas,
+$S$ sweeps within the step), pooled into one estimate
+$\chiB=\widehat{\operatorname{Var}}(B)$. The pooling is statistically
+well-behaved in both regimes:
+\begin{itemize}
+\item \emph{Near criticality}, the autocorrelation time
+$\tau_{\mathrm{int}}\gg S$, so each replica's $S$ samples are nearly
+identical and the pooled variance collapses to the \emph{cross-replica}
+variance --- exactly the honest estimator for correlated chains.
+\item \emph{Away from criticality}, $\tau_{\mathrm{int}}\ll S$ and the
+pooled estimate enjoys $\sim RS$ effectively independent samples.
+\end{itemize}
+This is the reason \code{replicas}\,$\geq4$ is recommended whenever
+\code{schedule\_type="optimal"} is used.
+
+\subsection{Single-replica guard and the \texorpdfstring{$\chiB$}{chi-B} floor}
+
+Two safeguards prevent pathological steps:
+\begin{description}
+\item[$R=1$ guard.] With a single replica near criticality all within-step
+samples coincide, the naive variance $\to0$, and
+Eq.~\eqref{eq:update-law} would take its \emph{maximum} step precisely where
+it must be smallest. The implementation therefore uses
+$\chiB=\max\bigl(\widehat{\operatorname{Var}}(B),\;
+nM\bigl[1-(B/nM)^2\bigr]\bigr)$, the second term being the
+single-bond variance extrapolated over the lattice --- a strictly positive
+lower bound near criticality.
+\item[Floor.] Deep in the ordered phase $\chiB\to0$ and
+$\chiB^{-\alpha}$ blows up; a floor
+$\chiB\ge10^{-4}\max_J\chiB^{\text{(pilot)}}$ caps the step size. The debug
+CSV records where the floor activates (\code{floor\_hit}); in a healthy run
+this is only the deeply ordered tail, never the critical window.
+\end{description}
+
+\section{Endpoints, temperature, and the two-phase SQA protocol}
+\label{sec:optimal-params}
+
+\subsection{Choosing $J_0$ and $J_{\mathrm{end}}$}
+
+All endpoints derive from the problem's own coupling scale. Let
+\begin{equation}
+J_{\mathrm{rms}}=\sqrt{\operatorname{mean}\bigl(J_{ij}^2\bigr)}
+\quad\text{over the non-zero couplings}
+\end{equation}
+(computable via \code{j\_rms\_from\_problem(problem)}). The quantum critical
+coupling scales as $\Jp^{c}\sim J_{\mathrm{rms}}$, so:
+\begin{itemize}
+\item \code{j\_perp\_start} --- from the tuned standard schedule's
+$(\beta,\Gamma_{\text{start}})$ through Eq.~\eqref{eq:jperp}; small
+(quantum end).
+\item \code{j\_perp\_end} --- default $\max(J_0,\;5\,J_{\mathrm{rms}})$,
+comfortably past the transition (classical end).
+\item $\beta$ --- for SQA, $\beta=\max(4/J_{\mathrm{rms}},\,1)$, i.e.\ cold
+enough that $\beta J_{\mathrm{rms}}\geq4$: thermal fluctuations must not
+wash out the order the $\Jp$ ramp is trying to establish.
+\end{itemize}
+The helper returns all three at once:
+\begin{pycode}
+from qanneal import optimal_j_perp_params, j_rms_from_problem
+beta, jp_start, jp_end = optimal_j_perp_params(problem, trotter_slices=32)
+jr = j_rms_from_problem(problem)
+\end{pycode}
+
+\begin{warnbox}[When can the adaptive schedule help at all?]
+The schedule needs a quantum range to act on: it helps when
+$J_{\mathrm{rms}}\gtrsim\code{j\_perp\_start}$ (in the auto-tuned setting,
+roughly $J_{\mathrm{rms}}\gtrsim3$), so that the run genuinely starts on the
+disordered side of the transition. If $J_{\mathrm{rms}}$ is far below
+$J_0$ the system is already effectively classical at step one,
+$\chiB\approx0$ everywhere, and no schedule --- adaptive or not --- has
+anything to optimise. Check a new problem class with
+\code{scripts/sanity\_schedule.py}, which classifies instances as
+\code{PASS} or \code{DEGENERATE} before you spend compute.
+\end{warnbox}
+
+\begin{warnbox}[Always pass an explicit \code{j\_perp\_end} in scripted runs]
+The C++ \code{run\_optimal} accepts a sentinel \code{j\_perp\_end<=0}
+that resolves to the coldest replica's Trotter coupling. If that resolves
+\emph{below} \code{j\_perp\_start} the schedule has no range; the code then
+installs a large fallback ceiling and prints a \code{cerr} warning. Relying
+on the sentinel makes runs silently sensitive to ladder details --- pass an
+explicit \code{j\_perp\_end} (e.g.\ $5J_{\mathrm{rms}}$) in anything
+scripted.
+\end{warnbox}
+
+\subsection{Two-phase protocol for SQA}
+
+Plain SQA under the adaptive schedule holds a \emph{single} fixed $\beta$
+--- it has no thermal annealing at all, which measurably hurts it. The SQA
+\code{run\_optimal} therefore runs two phases, split by
+\code{beta\_ramp\_fraction} (default $0.3$):
+\begin{enumerate}
+\item \textbf{Thermal ramp} --- for the first
+$\lceil0.3\cdot\code{num\_steps}\rceil$ steps, $\beta$ ramps from
+\code{beta\_ramp\_start} (default $0.1$) up to the cold target
+$\beta=\max(4/J_{\mathrm{rms}},1)$ at \emph{fixed} $\Jp=J_0$: a conventional
+thermal anneal that settles the slices into the disordered quantum state at
+the right temperature.
+\item \textbf{Adaptive ramp} --- $\beta$ then stays fixed while $\Jp$
+follows the calibrated inverse-CDF trajectory
+Eq.~\eqref{eq:inverse-cdf} over the remaining steps.
+\end{enumerate}
+SQAPT does \emph{not} use phase 1: its $(\beta,\Gamma)$ ladder plus replica
+swaps already supply thermal mobility.
+
+\subsection{SQAPT under a shared $\Jp$}
+\label{sec:sqapt-optimal}
+
+In the SQAPT variant, \emph{all} rungs share the single evolving $\Jp$;
+each keeps its own $(\beta_r,\Gamma_r)$ from the ladder. Two consequences,
+both derived earlier:
+\begin{itemize}
+\item In the swap exponent Eq.~\eqref{eq:swap-split} the quantum term
+carries the factor $\Jp^{(r)}-\Jp^{(r+1)}=0$: \textbf{swaps reduce to the
+purely classical criterion} on slice-summed energies.
+\item $\chiB$ is estimated by pooling $B$-samples across all rungs, exactly
+as in Section~\ref{sec:chib-est}.
+\end{itemize}
+
+\section{Usage}
+
+\subsection{High-level}
+
+\begin{pycode}
+from qanneal import solve
+
+result = solve(
+    problem,
+    method="sqa",              # or "sqapt"
+    schedule_type="optimal",
+    reads=15,
+    replicas=4,                # >=4 for a reliable chi_B estimate
+    optimal_eps_tilde=0.0,     # 0.0 = per-instance budget calibration
+    optimal_num_steps=150,
+    # Optional overrides (auto-computed from the problem scale if omitted):
+    # optimal_j_perp_end=25.0,         # default max(j_perp_start, 5*j_rms)
+    # optimal_beta_ramp_fraction=0.3,  # SQA two-phase split
+    # optimal_alpha=15/14,
+    # optimal_debug_csv="schedule.csv" # per-step J_perp / chi_B diagnostics
+)
+print(result.best_energy, result.best_sample)
+\end{pycode}
+
+For SQAPT with SW cluster moves:
+
+\begin{pycode}
+result = solve(
+    problem,
+    method="sqapt",
+    schedule_type="optimal",
+    replicas=8, reads=15,
+    trotter_slices=32,
+    worldline_sweeps=3,
+    cluster_sweeps=1,          # >0 = SQAPT+SW
+    swap_interval=1,
+    optimal_eps_tilde=0.0,
+    optimal_num_steps=150,
+)
+\end{pycode}
+
+\subsection{Low-level, with full diagnostics}
+
+\begin{pycode}
+from qanneal import SQAAnnealer, SQASchedule
+
+dummy = SQASchedule.from_vectors([1.0], [1.0])  # construction only
+ann = SQAAnnealer(ising, dummy, trotter_slices=32, replicas=4)
+
+result = ann.run_optimal(
+    beta=1.0,                    # phase-2 (cold) inverse temperature
+    j_perp_start=0.1, j_perp_end=25.0,
+    eps_tilde=0.0,               # <=0 -> budget calibration
+    alpha=15/14, num_steps=150, sweeps_per_step=20,
+    worldline_sweeps=3, cluster_sweeps=0,
+    calib_probes=12, calib_sweeps=10,   # pilot grid
+    beta_ramp_fraction=0.3,             # two-phase thermal ramp
+)
+result.j_perp_trace          # realised J_perp(t)
+result.chi_B_trace           # online chi_B(t)
+result.calibrated_eps_tilde  # the eps from Eq. (calibration)
+result.final_j_perp          # J_perp actually reached
+result.best_state, result.best_energy
+\end{pycode}
+
+The SQAPT twin is \code{SQAParallelTemperingAnnealer.run\_optimal}
+(full signature in Chapter~\ref{ch:api}), with identical calibration
+semantics and no two-phase ramp.
+
+\section{Diagnosing a run}
+\label{sec:optimal-diagnostics}
+
+Plot the three traces after any adaptive run:
+
+\begin{pycode}
+import numpy as np, matplotlib.pyplot as plt
+
+t  = np.arange(len(result.j_perp_trace))
+dj = np.diff(result.j_perp_trace)
+
+fig, axs = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
+axs[0].plot(t, result.j_perp_trace);  axs[0].set_ylabel("J_perp")
+axs[1].plot(t[:-1], dj);              axs[1].set_ylabel("step size dJ_perp")
+axs[2].plot(t, result.energy_trace);  axs[2].set_ylabel("energy")
+axs[2].set_xlabel("adaptive step")
+plt.suptitle("Optimal schedule diagnostics"); plt.tight_layout(); plt.show()
+\end{pycode}
+
+\textbf{A healthy run} shows (Fig.~\ref{fig:fastslow}): fast early movement,
+a pronounced dwell (small $\Delta\Jp$) in the critical window near
+$\Jp\approx J_{\mathrm{rms}}$, fast movement again past the transition, the
+endpoint reached within budget, and the steepest energy descent during the
+dwell.
+
+\textbf{Warning signs:}
+\begin{itemize}
+\item \emph{Flat or linear $\Jp(t)$ with no dwell} --- the schedule is
+frozen or degenerate. Check that $J_{\mathrm{end}}>J_0$ (look for the
+\code{cerr} fallback warning) and that the problem is in the favourable
+regime ($J_{\mathrm{rms}}\gtrsim J_0$).
+\item \emph{Constant $\Delta\Jp$} --- $\chiB$ estimate too noisy to shape
+the trajectory; raise \code{replicas} and/or \code{sweeps\_per\_step}.
+\item \emph{\code{final\_j\_perp} far below \code{resolved\_j\_perp\_end}}
+on a non-degenerate instance --- calibration failed; inspect the debug CSV
+(columns \code{phase}, \code{step\_index}, \code{j\_perp}, \code{chi\_B},
+\code{delta\_j}, \code{eps\_tilde}, \code{alpha}, \code{floor\_hit},
+\code{chi\_B\_online}; \code{phase=calib} rows are pilot probes).
+The helper \code{scripts/}\allowbreak\code{plot\_schedule\_trajectory.py}
+renders it.
+\end{itemize}
+
+\begin{notebox}[Pre-flight habit]
+Before any long or large-$n$ run, spend a minute on a small instance of the
+same problem class: run with \code{optimal\_debug\_csv} set, plot the
+trajectory, and confirm the fast--slow--fast shape.
+\code{python scripts/sanity\_schedule.py --n 40 --steps 150 --plot}
+automates exactly this check and prints \code{PASS} / \code{DEGENERATE} /
+\code{FAIL} per instance.
+\end{notebox}
+
+\section{Attribution: schedule effect vs.\ cluster moves}
+
+The adaptive \emph{schedule} and SW \emph{cluster sweeps} are independent
+mechanisms that both help on hard instances. When evaluating the schedule on
+your own problems, keep them separate or you will misattribute gains:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Comparison} & \textbf{\code{cluster\_sweeps}} & \textbf{Isolates}\\
+\midrule
+\code{sqapt}-std vs \code{sqapt}-opt & $0$ & the schedule effect alone\\
+\code{sqapt}+SW-std vs \code{sqapt}+SW-opt & $>0$ & schedule $\times$ cluster interaction\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Only credit ``the optimal schedule'' if the first comparison reproducibly
+favours it; if only the +SW pair improves, the gain belongs to the
+interaction and should be framed as such.

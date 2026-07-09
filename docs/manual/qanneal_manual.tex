@@ -1,0 +1,302 @@
+% ============================================================================
+%  qanneal — The Complete Manual
+%  Build:  latexmk -pdf qanneal_manual.tex     (or pdflatex x2)
+% ============================================================================
+\documentclass[11pt,a4paper]{report}
+
+% ----------------------------------------------------------------------------
+% Fonts & encoding
+% ----------------------------------------------------------------------------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{newpxtext}
+\usepackage{newpxmath}
+\usepackage[varqu,varl,scaled=0.94]{inconsolata}
+\usepackage{microtype}
+
+% ----------------------------------------------------------------------------
+% Layout
+% ----------------------------------------------------------------------------
+\usepackage[a4paper,top=2.7cm,bottom=2.9cm,left=2.6cm,right=2.6cm,headheight=14pt]{geometry}
+\usepackage{setspace}
+\setstretch{1.06}
+\setlength{\parskip}{0.35em}
+\setlength{\emergencystretch}{2.5em} % long inline code tokens: prefer loose lines over overfull
+
+% ----------------------------------------------------------------------------
+% Math
+% ----------------------------------------------------------------------------
+\usepackage{amsmath,mathtools,bm} % amssymb omitted: newpxmath provides the symbols
+\allowdisplaybreaks
+
+% ----------------------------------------------------------------------------
+% Colour palette
+% ----------------------------------------------------------------------------
+\usepackage{xcolor}
+\definecolor{qnavy}{HTML}{16345E}     % primary — deep navy
+\definecolor{qblue}{HTML}{2B5DA8}     % secondary blue
+\definecolor{qteal}{HTML}{0E7C7B}     % accent teal
+\definecolor{qamber}{HTML}{B3541E}    % warnings
+\definecolor{qplum}{HTML}{6B3074}     % physics boxes
+\definecolor{qgray}{HTML}{5A6472}     % muted text
+\definecolor{codebg}{HTML}{F6F8FA}    % code background
+\definecolor{codeframe}{HTML}{D4DAE3} % code frame
+\definecolor{kwcolor}{HTML}{0550AE}   % code keywords
+\definecolor{strcolor}{HTML}{0A7B4B}  % code strings
+\definecolor{comcolor}{HTML}{7C8695}  % code comments
+\definecolor{numcolor}{HTML}{953800}  % code numbers
+\definecolor{rowshade}{HTML}{EEF2F7}  % table row shade
+
+% ----------------------------------------------------------------------------
+% Tables & lists
+% ----------------------------------------------------------------------------
+\usepackage{booktabs,array,longtable,multirow,tabularx}
+\usepackage{enumitem}
+\setlist{topsep=2pt,itemsep=1.5pt,parsep=0pt}
+\renewcommand{\arraystretch}{1.25}
+
+% ----------------------------------------------------------------------------
+% Graphics
+% ----------------------------------------------------------------------------
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,shadows.blur,decorations.pathreplacing,backgrounds,fit}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+
+% ----------------------------------------------------------------------------
+% Boxes
+% ----------------------------------------------------------------------------
+\usepackage[most]{tcolorbox}
+\tcbuselibrary{listings,skins,breakable}
+
+% Key-equation box
+\newtcolorbox{keyeq}[1][]{%
+  enhanced,breakable,colback=qnavy!4,colframe=qnavy,boxrule=0pt,
+  borderline west={2.5pt}{0pt}{qnavy},arc=1.2mm,
+  left=4mm,right=3mm,top=2mm,bottom=2mm,
+  fonttitle=\bfseries\color{qnavy},title={#1}}
+
+% Informational note
+\newtcolorbox{notebox}[1][Note]{%
+  enhanced,breakable,colback=qteal!6,colframe=qteal!60!black,boxrule=0pt,
+  borderline west={2.5pt}{0pt}{qteal},arc=1.2mm,
+  left=4mm,right=3mm,top=2mm,bottom=2mm,
+  fonttitle=\bfseries\sffamily\color{qteal!50!black},title={#1}}
+
+% Warning
+\newtcolorbox{warnbox}[1][Warning]{%
+  enhanced,breakable,colback=qamber!6,colframe=qamber,boxrule=0pt,
+  borderline west={2.5pt}{0pt}{qamber},arc=1.2mm,
+  left=4mm,right=3mm,top=2mm,bottom=2mm,
+  fonttitle=\bfseries\sffamily\color{qamber!85!black},title={#1}}
+
+% Physics insight
+\newtcolorbox{physbox}[1][Physical picture]{%
+  enhanced,breakable,colback=qplum!5,colframe=qplum,boxrule=0pt,
+  borderline west={2.5pt}{0pt}{qplum},arc=1.2mm,
+  left=4mm,right=3mm,top=2mm,bottom=2mm,
+  fonttitle=\bfseries\sffamily\color{qplum},title={#1}}
+
+% API signature box
+\newtcolorbox{apibox}[1]{%
+  enhanced,breakable,colback=white,colframe=qblue!55,boxrule=0.5pt,arc=1.5mm,
+  left=3.5mm,right=3mm,top=2mm,bottom=2mm,
+  attach boxed title to top left={yshift=-2.6mm,xshift=3mm},
+  boxed title style={colback=qblue,arc=1mm,boxrule=0pt,
+    top=0.6mm,bottom=0.6mm,left=1.6mm,right=1.6mm},
+  fonttitle=\bfseries\sffamily\small\color{white},title={#1}}
+
+% ----------------------------------------------------------------------------
+% Code listings
+% ----------------------------------------------------------------------------
+\usepackage{listings}
+\lstdefinestyle{qbase}{
+  basicstyle=\small\ttfamily,
+  keywordstyle=\color{kwcolor}\bfseries,
+  commentstyle=\itshape\color{comcolor},
+  stringstyle=\color{strcolor},
+  numberstyle=\tiny\color{comcolor},
+  showstringspaces=false,
+  breaklines=true,
+  breakatwhitespace=true,
+  postbreak=\mbox{\textcolor{qgray}{$\hookrightarrow$}\space},
+  tabsize=4,
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true,
+}
+\lstdefinestyle{qpython}{style=qbase,language=Python,
+  morekeywords={as,with,yield,None,True,False,self,assert}}
+\lstdefinestyle{qcpp}{style=qbase,language=C++,
+  morekeywords={constexpr,nullptr,size_t,int8_t,override}}
+\lstdefinestyle{qbash}{style=qbase,language=bash,
+  morekeywords={cmake,pip,python,mpirun,export,sbatch,ctest}}
+
+\newtcblisting{pycode}{%
+  enhanced,breakable,listing only,
+  colback=codebg,colframe=codeframe,boxrule=0.5pt,arc=1.5mm,
+  left=3mm,right=2mm,top=1.2mm,bottom=1.2mm,
+  listing options={style=qpython}}
+\newtcblisting{cppcode}{%
+  enhanced,breakable,listing only,
+  colback=codebg,colframe=codeframe,boxrule=0.5pt,arc=1.5mm,
+  left=3mm,right=2mm,top=1.2mm,bottom=1.2mm,
+  listing options={style=qcpp}}
+\newtcblisting{bashcode}{%
+  enhanced,breakable,listing only,
+  colback=qnavy!95!black,colframe=qnavy!95!black,boxrule=0pt,arc=1.5mm,
+  left=3mm,right=2mm,top=1.2mm,bottom=1.2mm,
+  listing options={style=qbash,basicstyle=\small\ttfamily\color{white},
+    keywordstyle=\color{qteal!45},commentstyle=\itshape\color{white!65!qnavy},
+    stringstyle=\color{qamber!60}}}
+
+% inline code
+% \_ (robust) suppresses later line breaks in tt text under newpx+zi4;
+% \textunderscore does not — swap them locally inside \code.
+\newcommand{\code}[1]{\texttt{\let\_\textunderscore #1}}
+\newcommand{\qv}{\textsf{qanneal}}
+
+% ----------------------------------------------------------------------------
+% Headings
+% ----------------------------------------------------------------------------
+\usepackage{titlesec}
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{qnavy}}
+  {\flushright\fontsize{60}{60}\selectfont\color{qnavy!22}\thechapter}
+  {-24pt}
+  {\flushleft\Huge}
+  [\vspace{4pt}{\color{qnavy}\titlerule[1.2pt]}]
+\titlespacing*{\chapter}{0pt}{-10pt}{28pt}
+
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{qnavy}}{\thesection}{0.8em}{}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{qblue}}{\thesubsection}{0.8em}{}
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries\color{qgray}}{\thesubsubsection}{0.8em}{}
+
+% ----------------------------------------------------------------------------
+% Headers / footers
+% ----------------------------------------------------------------------------
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily\color{qgray}\leftmark}
+\fancyhead[R]{\small\sffamily\color{qgray}\qv{} 0.6.1}
+\fancyfoot[C]{\small\sffamily\color{qgray}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\color{qnavy!35}\hrule width\headwidth height\headrulewidth}
+\renewcommand{\chaptermark}[1]{\markboth{\thechapter.\ #1}{}}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\sffamily\color{qgray}\thepage}%
+  \renewcommand{\headrulewidth}{0pt}}
+
+% ----------------------------------------------------------------------------
+% Hyperlinks
+% ----------------------------------------------------------------------------
+\usepackage[colorlinks=true,linkcolor=qblue,urlcolor=qteal,citecolor=qteal,
+            pdftitle={qanneal - The Complete Manual},
+            pdfauthor={qanneal developers}]{hyperref}
+
+% math shortcuts
+\newcommand{\Jp}{J_{\perp}}
+\newcommand{\chiB}{\chi_B}
+\newcommand{\Ecl}{E_{\mathrm{cl}}}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\sign}{\operatorname{sign}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\epst}{\tilde{\varepsilon}}
+\newcommand{\ket}[1]{\lvert #1\rangle}
+\newcommand{\bra}[1]{\langle #1\rvert}
+
+\begin{document}
+
+% ============================================================================
+%  TITLE PAGE
+% ============================================================================
+\begin{titlepage}
+\begin{tikzpicture}[remember picture,overlay]
+  \fill[qnavy] (current page.north west) rectangle
+    ([yshift=-9.2cm]current page.north east);
+  \fill[qteal] ([yshift=-9.2cm]current page.north west) rectangle
+    ([yshift=-9.45cm]current page.north east);
+  % decorative worldlines
+  \begin{scope}[shift={([yshift=-1.6cm,xshift=2.2cm]current page.north west)}]
+    \foreach \y in {0,-0.55,-1.1,-1.65,-2.2}{
+      \draw[white!25!qnavy,line width=1pt]
+        (0,\y) -- ++(3.0,0) -- ++(0,-0.22) -- ++(2.6,0) -- ++(0,0.22)
+        -- ++(3.4,0) -- ++(0,-0.22) -- ++(2.2,0) -- ++(0,0.22) -- ++(5.0,0);}
+    \foreach \x/\y in {3.0/0,5.6/-0.55,9.0/-1.1,11.2/-1.65,4.2/-2.2}{
+      \fill[qteal!80] (\x,\y) circle (1.6pt);}
+  \end{scope}
+  \node[anchor=west,text=white] at ([yshift=-5.4cm,xshift=2.4cm]current page.north west)
+    {\fontsize{46}{50}\selectfont\bfseries qanneal};
+  \node[anchor=west,text=white!88!qnavy] at ([yshift=-6.8cm,xshift=2.45cm]current page.north west)
+    {\Large The Complete Manual — Theory, Algorithms \& API};
+  \node[anchor=west,text=white!70!qnavy] at ([yshift=-7.8cm,xshift=2.45cm]current page.north west)
+    {\large Research-grade Ising / QUBO optimisation on classical hardware};
+\end{tikzpicture}
+
+\vspace*{10.2cm}
+\begin{center}
+\begin{minipage}{0.86\textwidth}
+\centering
+{\Large\color{qnavy}\bfseries Version 0.6.1}\\[1.2em]
+{\large\color{qgray}
+Simulated Annealing \,\textbullet\, Simulated Quantum Annealing\\[0.25em]
+Quantum Parallel Tempering \,\textbullet\, Continuous-Time PIMC\\[0.25em]
+and the Optimal Adaptive $\Jp$ Schedule}\\[2.2em]
+\begin{tcolorbox}[colback=qnavy!4,colframe=qnavy!30,arc=2mm,boxrule=0.5pt,
+                  width=0.92\textwidth,left=5mm,right=5mm,top=3mm,bottom=3mm]
+\small This manual is self-contained: every algorithm implemented in \qv{} is
+derived from first principles --- the Metropolis rule from detailed balance,
+the Suzuki--Trotter path integral from the quantum partition function, the
+replica-exchange acceptance rule from the joint Gibbs measure, and the
+locally-adiabatic $\Jp$ schedule from the Roland--Cerf condition --- alongside
+the complete Python and C++ API, worked examples, tuning guidance and HPC
+deployment recipes. No external references are required to use the library.
+\end{tcolorbox}
+\vspace{2.0em}
+{\color{qgray}\large \today\\[0.4em] Apache License 2.0}
+\end{minipage}
+\end{center}
+\end{titlepage}
+
+% ============================================================================
+%  FRONT MATTER
+% ============================================================================
+\pagenumbering{roman}
+{\hypersetup{linkcolor=qnavy}\tableofcontents}
+\cleardoublepage
+\pagenumbering{arabic}
+
+% ============================================================================
+%  PARTS
+% ============================================================================
+\part{Foundations}
+\input{chapters/01_introduction}
+\input{chapters/02_math_foundations}
+\input{chapters/03_statmech}
+
+\part{The Annealing Engines}
+\input{chapters/04_simulated_annealing}
+\input{chapters/05_sqa}
+\input{chapters/06_sqapt}
+\input{chapters/07_ctpimc}
+
+\part{The Optimal Adaptive Schedule}
+\input{chapters/08_optimal_schedule}
+
+\part{Using the Library}
+\input{chapters/09_installation}
+\input{chapters/10_api}
+\input{chapters/11_examples}
+\input{chapters/12_hpc}
+\input{chapters/13_troubleshooting}
+\input{chapters/14_cpp}
+
+\appendix
+\part{Appendices}
+\input{chapters/15_appendix}
+
+\end{document}

@@ -1,0 +1,95 @@
+\chapter{Installation and Building}
+\label{ch:install}
+
+\section{Requirements}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Component} & \textbf{Requirement} & \textbf{Role}\\
+\midrule
+Python & $\geq 3.11$ & front end\\
+NumPy & any recent & array interchange\\
+C++ compiler & C++17 (GCC $\geq9$, Clang $\geq10$, MSVC 2019+) & core engines\\
+CMake & $\geq 3.18$ & build system (via scikit-build)\\
+OpenMP & optional & parallel replicas/slices\\
+MPI + \code{mpi4py} & optional & multi-node runs\\
+\code{matplotlib}, \code{tqdm} & optional & plots, progress bars\\
+\code{dimod}, \code{networkx} & optional & BQM / graph problem inputs\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Installing the Python package}
+
+From the repository root:
+
+\begin{bashcode}
+# Standard install (recommended)
+python -m pip install . --no-build-isolation
+
+# Editable install for development
+python -m pip install -e . --no-build-isolation
+
+# Convenience scripts
+./setup.sh        # macOS / Linux
+setup.bat         # Windows cmd
+./setup.ps1       # Windows PowerShell
+\end{bashcode}
+
+The build compiles the C++17 core and the pybind11 extension
+(\code{qanneal.\_qanneal}) in place. Verify:
+
+\begin{bashcode}
+python -c "import qanneal; print(qanneal.__version__)"   # 0.6.1
+\end{bashcode}
+
+\section{Building the C++ library directly}
+
+For C++-only use, tests, or the MPI example:
+
+\begin{bashcode}
+cmake -S . -B build \
+  -DQANNEAL_ENABLE_OPENMP=ON \
+  -DQANNEAL_ENABLE_MPI=OFF \
+  -DQANNEAL_BUILD_TESTS=ON \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build
+\end{bashcode}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{7.4cm}@{}}
+\toprule
+\textbf{CMake flag} & \textbf{Default} & \textbf{Effect}\\
+\midrule
+\code{QANNEAL\_ENABLE\_OPENMP} & \code{ON} & Parallel loops in Replica/SQA/SQAPT annealers.\\
+\code{QANNEAL\_ENABLE\_MPI} & \code{OFF} & Distributed \code{run\_replica\_anneal()} and the MPI example.\\
+\code{QANNEAL\_BUILD\_TESTS} & \code{ON} & C++ unit tests (\code{ctest}).\\
+\code{QANNEAL\_BUILD\_PYTHON} & \code{OFF}$^{*}$ & pybind11 extension ($^{*}$forced \code{ON} by scikit-build during pip installs).\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Platform notes}
+
+\begin{description}
+\item[Linux] Everything works out of the box with GCC; OpenMP is detected
+automatically.
+\item[macOS] Apple's Clang ships without OpenMP. Install it and rebuild:
+\code{brew install libomp}. Without it the build succeeds but runs
+single-threaded.
+\item[Windows] Use the provided \code{setup.bat}/\code{setup.ps1}; MSVC 2019
+or newer.
+\item[Clusters] Build in the same environment (compiler + Python) you will
+run in; see Chapter~\ref{ch:hpc} for launcher and SLURM recipes.
+\end{description}
+
+\begin{warnbox}[Stale extensions]
+\code{ModuleNotFoundError: qanneal.\_qanneal} almost always means a stale or
+mismatched build --- reinstall from the repository root with the command
+above, and avoid mixing an installed site-packages copy with a source-tree
+\code{PYTHONPATH} overlay.
+\end{warnbox}

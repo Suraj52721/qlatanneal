@@ -1,0 +1,148 @@
+\chapter{Introduction}
+\label{ch:intro}
+
+\section{What is \qv?}
+
+\qv{} is a research-grade optimiser for \emph{Ising} and \emph{QUBO} problems
+--- the two canonical formulations into which an enormous range of hard
+combinatorial optimisation problems (partitioning, scheduling, routing,
+satisfiability, portfolio selection, protein folding, \dots) can be encoded.
+It provides four annealing engines, spanning the spectrum from purely
+classical thermal optimisation to the closest CPU-side simulation of a
+physical quantum annealer:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Method} & \textbf{Name} & \textbf{What it simulates} & \textbf{Ch.}\\
+\midrule
+Simulated Annealing & \code{sa} & Classical thermal fluctuations & \ref{ch:sa}\\
+Simulated Quantum Annealing & \code{sqa} & Discrete-time path integral (Trotterised QA) & \ref{ch:sqa}\\
+SQA + Parallel Tempering & \code{sqapt} & QA with replica exchange, $(\beta,\Gamma)$ ladder & \ref{ch:sqapt}\\
+Continuous-Time PIMC & \code{ctpimc} & Continuous-time path integral (worldlines) & \ref{ch:ctpimc}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All four engines share a single high-level Python entry point,
+\code{solve()}, and a common C++17 core exposed through pybind11 bindings.
+On top of the engines, \qv{} implements a theoretically grounded
+\emph{optimal adaptive $\Jp$ schedule} (Chapter~\ref{ch:optimal}) derived
+from the local adiabaticity condition of Roland and Cerf: the annealing
+trajectory automatically slows down where the simulated system is close to
+its quantum critical point and accelerates elsewhere.
+
+\section{Design philosophy}
+
+\begin{description}[style=nextline]
+\item[One call to solve.] \code{solve(problem, method=..., ...)} accepts
+NumPy arrays, dictionaries, edge lists, \code{dimod} binary quadratic models
+and \code{networkx} graphs, auto-detects the input type, auto-tunes a
+schedule from the problem's own energy scale, runs any number of independent
+reads and returns the best result.
+
+\item[Physics first.] Every knob in the library corresponds to a physical
+quantity: $\beta$ is an inverse temperature, $\Gamma$ a transverse field,
+$M$ a number of imaginary-time slices, $\Jp$ a Trotter bond strength.
+The documentation (this manual) derives all of them so that parameter
+choices can be reasoned about rather than guessed.
+
+\item[Nothing hard-coded.] Schedule endpoints, temperature ladders and the
+adaptive-schedule calibration all derive from the \emph{problem's} coupling
+scale (via random-flip probing or the RMS coupling $J_{\mathrm{rms}}$),
+so the same code works unchanged from $n=10$ toy instances to
+$n>100\,000$ sparse graphs.
+
+\item[Research instrumentation.] Observer classes capture per-sweep energy,
+magnetisation, and full spin-state traces; the adaptive schedule exposes its
+realised $\Jp$ trajectory and bond-susceptibility trace so that every run can
+be audited.
+
+\item[HPC ready.] OpenMP parallelism within a run, a multiprocessing/MPI
+launcher across reads and nodes, and SLURM job-array recipes.
+\end{description}
+
+\section{Architecture at a glance}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  layer/.style={rectangle,rounded corners=2pt,draw=qnavy!50,fill=qnavy!6,
+                text width=13.2cm,align=center,minimum height=0.95cm,font=\small},
+  lab/.style={font=\scriptsize\sffamily\color{qgray}},
+  node distance=3.5mm]
+\node[layer,fill=qteal!10,draw=qteal!60] (a)
+  {\textbf{Python front end}\quad \code{solve()} \,\textbullet\, auto-tuned schedules \,\textbullet\, problem adapters (ndarray / dict / BQM / graph)};
+\node[layer,below=of a] (b)
+  {\textbf{pybind11 bindings}\quad models \,\textbullet\, schedules \,\textbullet\, annealers \,\textbullet\, observers \,\textbullet\, results};
+\node[layer,below=of b] (c)
+  {\textbf{C++17 core}\quad \code{Annealer} \,\textbullet\, \code{ReplicaAnnealer} \,\textbullet\, \code{SQAAnnealer} \,\textbullet\, \code{SQAParallelTemperingAnnealer} \,\textbullet\, \code{CTPIMCAnnealer}};
+\node[layer,below=of c,fill=qnavy!12] (d)
+  {\textbf{Parallel runtime}\quad OpenMP (replicas $\times$ slices) \,\textbullet\, optional MPI \,\textbullet\, SLURM array launcher};
+\draw[-{Stealth},thick,qnavy!60] (a) -- (b);
+\draw[-{Stealth},thick,qnavy!60] (b) -- (c);
+\draw[-{Stealth},thick,qnavy!60] (c) -- (d);
+\end{tikzpicture}
+\caption{The \qv{} software stack. Users normally interact only with the top
+layer; every lower layer remains individually scriptable.}
+\label{fig:stack}
+\end{figure}
+
+\section{A sixty-second tour}
+
+Install from the repository root and solve a three-variable QUBO:
+
+\begin{bashcode}
+python -m pip install . --no-build-isolation
+\end{bashcode}
+
+\begin{pycode}
+import numpy as np
+from qanneal import solve
+
+# Minimise  E(x) = x0 + x2 - 2 x0 x1 - 2 x1 x2   over bits x in {0,1}^3
+Q = np.array([
+    [ 1.0, -2.0,  0.0],
+    [-2.0,  0.0, -2.0],
+    [ 0.0, -2.0,  1.0],
+], dtype=float)
+
+result = solve(Q, method="sqapt", reads=16, seed=0, return_bits=True)
+print(result.best_sample)   # bit vector, e.g. [1 1 1]
+print(result.best_energy)   # minimum QUBO energy found
+\end{pycode}
+
+Everything that just happened --- how the QUBO became an Ising Hamiltonian,
+how a $(\beta,\Gamma)$ ladder was tuned to the matrix's energy scale, what a
+Trotter slice is, why replica exchange helps, and how to make the run
+adaptive, parallel or verifiable --- is explained in the rest of this manual.
+
+\section{How to read this manual}
+
+\begin{description}[style=nextline]
+\item[Part I --- Foundations.] The Ising and QUBO models, their exact
+equivalence, encodings of classic NP-hard problems, and the statistical
+mechanics (Boltzmann distributions, Markov chains, detailed balance) on which
+every engine rests. Read this if you want the mathematics from zero.
+
+\item[Part II --- The annealing engines.] One chapter per engine. Each
+derives the algorithm, states the exact acceptance rules implemented in the
+C++ core, and ends with parameter guidance.
+
+\item[Part III --- The optimal adaptive schedule.] The local-adiabaticity
+derivation, the bond susceptibility $\chiB$, budget calibration, the
+inverse-CDF trajectory, and how to diagnose a run.
+
+\item[Part IV --- Using the library.] Installation, the full Python API
+reference, worked end-to-end examples, parallel/HPC deployment,
+troubleshooting, and the C++ API.
+\end{description}
+
+\begin{notebox}[Typographical conventions]
+Python and C++ identifiers are set in \code{monospace}. Key equations are
+boxed with a navy rule; physical intuition appears in plum ``Physical
+picture'' boxes; pitfalls appear in amber warning boxes. Spins are
+$s_i\in\{-1,+1\}$, bits are $x_i\in\{0,1\}$, $\beta$ is always an inverse
+temperature and $M$ the number of Trotter slices.
+\end{notebox}

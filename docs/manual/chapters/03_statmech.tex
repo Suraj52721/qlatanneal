@@ -1,0 +1,172 @@
+\chapter{Statistical Mechanics Background}
+\label{ch:statmech}
+
+Every engine in \qv{} is a Markov-chain Monte Carlo (MCMC) sampler of a
+Gibbs--Boltzmann distribution, driven slowly toward the zero-temperature (or
+zero-quantum-fluctuation) limit. This chapter builds that machinery from
+scratch: the Boltzmann distribution, why sampling it at low temperature
+solves optimisation problems, Markov chains, detailed balance, and the
+Metropolis rule. Readers fluent in MCMC can skim to
+Chapter~\ref{ch:sa}.
+
+\section{The Boltzmann distribution}
+
+A system with configuration space $\Omega$ (for us,
+$\Omega=\{-1,+1\}^n$) and energy function $E:\Omega\to\mathbb{R}$, held in
+equilibrium at temperature $T$, occupies configuration $s$ with probability
+
+\begin{keyeq}[Gibbs--Boltzmann distribution]
+\begin{equation}
+\pi_\beta(s)=\frac{\mathrm{e}^{-\beta E(s)}}{Z(\beta)},
+\qquad
+Z(\beta)=\sum_{s\in\Omega}\mathrm{e}^{-\beta E(s)},
+\qquad
+\beta=\frac{1}{k_BT}.
+\label{eq:boltzmann}
+\end{equation}
+\end{keyeq}
+
+$\beta$ is the \emph{inverse temperature}; in \qv{} it is always
+dimensionless (energies carry the units). $Z(\beta)$ is the \emph{partition
+function}. Two limits explain the whole strategy of annealing:
+
+\begin{itemize}
+\item $\beta\to0$ (infinite temperature): $\pi_\beta$ is uniform over all
+$2^n$ configurations --- pure exploration, no preference for low energy.
+\item $\beta\to\infty$ (zero temperature): the ratio
+$\pi_\beta(s)/\pi_\beta(s^\ast)=\mathrm{e}^{-\beta\,(E(s)-E(s^\ast))}\to0$
+for every non-optimal $s$, so \emph{all probability mass concentrates on the
+ground states}. Sampling at large $\beta$ \emph{is} optimisation.
+\end{itemize}
+
+The catch is that sampling $\pi_\beta$ directly at large $\beta$ is as hard
+as the optimisation problem itself: naive samplers get trapped in local
+minima because the distribution is a set of sharp, well-separated peaks.
+Annealing resolves this by \emph{starting} at small $\beta$, where the
+distribution is easy to sample, and increasing $\beta$ slowly enough that the
+sampler tracks the shifting distribution.
+
+\section{Markov chains and stationarity}
+
+We generate samples by a Markov chain: a random walk on $\Omega$ whose next
+state depends only on the current one, via a transition kernel
+$P(s\to s')\ge0$ with $\sum_{s'}P(s\to s')=1$. A distribution $\pi$ is
+\emph{stationary} for $P$ if it is preserved by one step of the chain:
+\begin{equation}
+\sum_{s}\pi(s)\,P(s\to s')=\pi(s')\qquad\text{for all } s'.
+\label{eq:stationary}
+\end{equation}
+If, additionally, the chain is \emph{irreducible} (any state reachable from
+any other) and \emph{aperiodic}, the ergodic theorem guarantees that the
+chain's state distribution converges to $\pi$ from any start, and long-run
+averages along the chain converge to expectations under $\pi$.
+
+\subsection{Detailed balance}
+
+Verifying Eq.~\eqref{eq:stationary} directly is awkward. A stronger, local
+condition that implies it is \emph{detailed balance}:
+
+\begin{keyeq}[Detailed balance]
+\begin{equation}
+\pi(s)\,P(s\to s') \;=\; \pi(s')\,P(s'\to s)
+\qquad\text{for every pair } s,s' .
+\label{eq:detailed-balance}
+\end{equation}
+\end{keyeq}
+
+Summing both sides over $s$ immediately recovers
+Eq.~\eqref{eq:stationary}. Detailed balance says the equilibrium probability
+flux between any two states is symmetric --- the chain, run at equilibrium,
+is statistically indistinguishable from its time reversal.
+
+\section{The Metropolis rule, derived}
+\label{sec:metropolis}
+
+Split each transition into a \emph{proposal} $g(s\to s')$ (in \qv: pick a
+spin uniformly and flip it, so $g$ is symmetric, $g(s\to s')=g(s'\to s)$) and
+an \emph{acceptance probability} $A(s\to s')$, so
+$P(s\to s')=g(s\to s')\,A(s\to s')$ for $s'\ne s$. Substituting into
+Eq.~\eqref{eq:detailed-balance} with $\pi=\pi_\beta$ from
+Eq.~\eqref{eq:boltzmann}, the proposal factors cancel and the partition
+function cancels too:
+\begin{equation}
+\frac{A(s\to s')}{A(s'\to s)}
+=\frac{\pi_\beta(s')}{\pi_\beta(s)}
+=\mathrm{e}^{-\beta\,\Delta E},
+\qquad \Delta E = E(s')-E(s).
+\end{equation}
+Any $A$ satisfying this ratio works; the choice that maximises acceptance
+(and hence mixing speed) is the \emph{Metropolis--Hastings} rule:
+
+\begin{keyeq}[Metropolis acceptance]
+\begin{equation}
+A(s\to s')=\min\!\bigl(1,\;\mathrm{e}^{-\beta\,\Delta E}\bigr)
+=\begin{cases}
+1 & \Delta E\le 0 \quad\text{(downhill: always accept)}\\[2pt]
+\mathrm{e}^{-\beta\,\Delta E} & \Delta E>0 \quad\text{(uphill: accept with Boltzmann weight)} .
+\end{cases}
+\label{eq:metropolis}
+\end{equation}
+\end{keyeq}
+
+This is exactly what the C++ core executes; for a single-spin flip the
+$\Delta E$ comes from the cached-local-field formula Eq.~\eqref{eq:deltaE},
+making each proposal $O(1)$.
+
+\begin{physbox}
+At small $\beta$ almost every move is accepted and the walker diffuses freely
+across the landscape. At large $\beta$ uphill moves are exponentially
+suppressed and the walker rolls downhill into the nearest basin. Annealing
+is the art of spending long enough at intermediate $\beta$ --- where the
+walker can still cross barriers whose height is a few times $1/\beta$ ---
+that it ends in the \emph{right} basin before freezing.
+\end{physbox}
+
+\subsection{Sweeps, ergodicity, and shuffled visit order}
+
+A \emph{sweep} is $n$ proposals --- on average one per spin. \qv{} visits
+spins in a random order re-shuffled each sweep (rather than uniformly at
+random with replacement), which lowers the chance of neglecting a spin for
+long stretches while preserving detailed balance. All engine parameters
+counting ``sweeps'' (\code{sweeps\_per\_beta}, \code{sweeps\_per\_step},
+\code{worldline\_sweeps}, \code{cluster\_sweeps}) are in units of full
+sweeps.
+
+\section{From sampling to annealing}
+\label{sec:annealing-idea}
+
+Simulated annealing~\cite{kirkpatrick} runs Metropolis dynamics while
+increasing $\beta$ along a \emph{schedule}
+$\beta_1<\beta_2<\dots<\beta_K$, spending a fixed number of sweeps at each
+value. Two classical facts frame all schedule design:
+
+\begin{enumerate}
+\item \textbf{(Geman--Geman)} With a logarithmically slow schedule
+$\beta_k \propto \log k$, SA converges to a global optimum with probability
+one. This is far too slow to use, but it shows the trade-off is fundamental:
+faster cooling risks freezing into excited states.
+\item \textbf{(Acceptance targeting)} A schedule is well-matched to a problem
+when the \emph{uphill acceptance rate} decays from near~1 at the start to
+near~0 at the end. Given a characteristic uphill move size $\Delta$, the
+acceptance at inverse temperature $\beta$ is
+$p=\mathrm{e}^{-\beta\Delta}$, hence
+\begin{equation}
+\beta(p)=\frac{-\ln p}{\Delta}.
+\label{eq:beta-from-p}
+\end{equation}
+\qv's auto-tuned schedules (Section~\ref{sec:tuned-schedules}) measure
+$\Delta$ from the problem itself --- the 75th percentile of $|\Delta E|$ over
+random single-spin flips --- and place $\beta_{\text{start}},
+\beta_{\text{end}}$ at target acceptances via Eq.~\eqref{eq:beta-from-p}.
+No manual temperature tuning is required.
+\end{enumerate}
+
+\begin{notebox}[Quantum analogue]
+Chapters~\ref{ch:sqa}--\ref{ch:ctpimc} replace ``thermal fluctuations
+controlled by $1/\beta$'' with ``quantum fluctuations controlled by a
+transverse field $\Gamma$''. The mathematical machinery of this chapter
+survives intact: the quantum partition function is mapped (exactly in a
+well-defined limit) onto a \emph{classical} Boltzmann distribution in one
+extra dimension, and the very same Metropolis rule
+Eq.~\eqref{eq:metropolis} samples it.
+\end{notebox}

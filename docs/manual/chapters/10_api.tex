@@ -1,0 +1,502 @@
+\chapter{Python API Reference}
+\label{ch:api}
+
+Complete reference for every public class and function of \qv{}~0.6.1.
+Anything documented here is importable directly from the top-level package:
+\code{from qanneal import ...}.
+
+% ===========================================================================
+\section{The high-level solver: \code{solve()}}
+\label{sec:api-solve}
+
+\begin{apibox}{solve(problem, method="sqa", **kwargs) $\rightarrow$ SolveResult}
+One-call interface: accepts any supported problem type, auto-selects and
+tunes a schedule, runs \code{reads} independent runs, returns the best
+result.
+\end{apibox}
+
+\subsection{Accepted problem types}
+
+The \code{problem} argument is auto-detected:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{8.4cm}@{}}
+\toprule
+\textbf{Type} & \textbf{Interpretation}\\
+\midrule
+\code{DenseIsing}, \code{SparseIsing} & used directly\\
+\code{QUBO} & converted via \code{to\_ising()}\\
+\code{np.ndarray} $(n\times n)$ & QUBO matrix, Eq.~\eqref{eq:qubo}\\
+\code{dict\{(i,j): float\}} & sparse QUBO dictionary\\
+\code{list[(i, j, float)]} & sparse QUBO entry list\\
+\code{dimod.BinaryQuadraticModel} & BINARY or SPIN vartype (requires \code{dimod})\\
+\code{networkx.Graph} & node attr \code{bias}, edge attr \code{weight} (requires \code{networkx})\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For dict/list inputs, pass \code{n=...} if the variable count cannot be
+inferred. For BQM/graph inputs, \code{result.var\_order} maps positions back
+to your original variable labels.
+
+\subsection{Common parameters (all methods)}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{7.9cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Default} & \textbf{Meaning}\\
+\midrule
+\code{method} & \code{"sqa"} & \code{"sa"}, \code{"sqa"}, \code{"sqapt"}, \code{"ctpimc"}.\\
+\code{reads} & 1 & Independent runs; best over all reads is returned.\\
+\code{sweeps\_per\_beta} & 20 & Metropolis sweeps per schedule step (also serves as \code{sweeps\_per\_step} in optimal mode).\\
+\code{schedule} & \code{None} & Schedule object; auto-tuned per method if \code{None}.\\
+\code{seed} & \code{None} & RNG seed; \code{None} = random.\\
+\code{progress} & \code{True} & tqdm progress bar.\\
+\code{backend} & \code{"cpu"} & Compute backend.\\
+\code{n} & \code{None} & Size hint for dict/list inputs.\\
+\code{return\_bits} & \code{False} & Return $\{0,1\}$ bits instead of $\{-1,+1\}$ spins.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{SQA / SQAPT parameters}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{7.9cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Default} & \textbf{Meaning}\\
+\midrule
+\code{trotter\_slices} & 32 & Imaginary-time slices $M$ (Section~\ref{sec:trotter}).\\
+\code{replicas} & 1 & Parallel Trotter systems (\code{sqa}) or ladder rungs (\code{sqapt}).\\
+\code{worldline\_sweeps} & 5 & Whole-worldline flips per step (Eq.~\eqref{eq:worldline}).\\
+\code{cluster\_sweeps} & 0 & Swendsen--Wang segment flips per step; $>0$ enables +SW.\\
+\code{continuous\_time\_slices} & 0 & If $>0$, overrides $M$ to approximate continuous time.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{SQAPT-only parameters}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{7.9cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Default} & \textbf{Meaning}\\
+\midrule
+\code{pt\_steps} & 50 & Local-update + swap epochs (standard schedule).\\
+\code{swap\_interval} & 1 & Attempt swaps every $N$ epochs.\\
+\code{pt\_betas} & \code{None} & Explicit $\beta$ ladder (overrides schedule).\\
+\code{pt\_gammas} & \code{None} & Explicit $\Gamma$ ladder (must pair with \code{pt\_betas}).\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{CT-PIMC-only parameters}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{7.9cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Default} & \textbf{Meaning}\\
+\midrule
+\code{ctpimc\_qubits\_per\_update} & 1 & Spins per cluster proposal.\\
+\code{ctpimc\_qubits\_per\_chain} & 1 & Chain length for lattice-mode updates.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Optimal-schedule parameters (\code{schedule\_type="optimal"})}
+
+Applicable to \code{sqa} and \code{sqapt}; theory in
+Chapter~\ref{ch:optimal}.
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{7.6cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Default} & \textbf{Meaning}\\
+\midrule
+\code{schedule\_type} & \code{"standard"} & \code{"optimal"} activates the adaptive $\Jp$ schedule.\\
+\code{optimal\_eps\_tilde} & 0.0 & $\le0$ = per-instance budget calibration (recommended); $>0$ = legacy fixed online scale.\\
+\code{optimal\_alpha} & $15/14$ & Universality exponent $\alpha$ (Eq.~\eqref{eq:update-law}).\\
+\code{optimal\_num\_steps} & 100 & Adaptive step budget $T$.\\
+\code{optimal\_j\_perp\_start} & auto & $J_0$; from the tuned schedule's quantum end.\\
+\code{optimal\_j\_perp\_end} & auto & $J_{\mathrm{end}}$; default $\max(J_0,\,5J_{\mathrm{rms}})$.\\
+\code{optimal\_beta} & auto & Fixed $\beta$; SQA default $\max(4/J_{\mathrm{rms}},1)$.\\
+\code{optimal\_beta\_ramp\_fraction} & 0.3 & SQA two-phase split (Section~\ref{sec:optimal-params}).\\
+\code{optimal\_debug\_csv} & \code{""} & Path for the per-step diagnostic CSV.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{\code{SolveResult}}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{8.2cm}@{}}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Meaning}\\
+\midrule
+\code{method} & \code{str} & Method used.\\
+\code{samples} & \code{list[np.ndarray]} & Best spin/bit vector from each read.\\
+\code{energies} & \code{list[float]} & Best energy from each read.\\
+\code{best\_sample} & \code{np.ndarray} & Global best configuration.\\
+\code{best\_energy} & \code{float} & Global best energy.\\
+\code{trace} & \code{list[float]} & Energy trace from the first read.\\
+\code{var\_order} & \code{list} & Variable ordering (BQM/graph inputs).\\
+\code{return\_bits} & \code{bool} & Whether samples are bits or spins.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Manual spin$\to$bit conversion:
+\code{bits = ((result.best\_sample + 1) // 2).astype(int)}.
+
+% ===========================================================================
+\section{Model classes}
+\label{sec:api-models}
+
+\subsection{\code{DenseIsing}}
+
+\begin{apibox}{DenseIsing(h, J, c=0.0)}
+Fully-connected Ising model, dense $n\times n$ storage. Energy:
+Eq.~\eqref{eq:ising}.
+\end{apibox}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{7.7cm}@{}}
+\toprule
+\textbf{Argument} & \textbf{Type} & \textbf{Meaning}\\
+\midrule
+\code{h} & \code{ndarray (n,)} & Local fields; $h_i>0$ pushes spin $i$ toward $-1$.\\
+\code{J} & \code{ndarray (n,n)} & Symmetric coupling matrix; upper triangle used; ferromagnetic $<0$, antiferromagnetic $>0$.\\
+\code{c} & \code{float} & Constant offset (energy bookkeeping only).\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Methods: \code{size()} $\to$ \code{int}; \code{energy(spins)} $\to$
+\code{float} ($O(n^2)$); \code{delta\_energy(spins, flip)} $\to$
+\code{float} ($O(n)$, Eq.~\eqref{eq:deltaE}); \code{fields()} and
+\code{couplings()} return the stored $h$ and $J$.
+
+\subsection{\code{SparseIsing} and \code{SparseEdge}}
+
+\begin{apibox}{SparseIsing(h, edges, n, c=0.0)}
+Edge-list Ising model; scales to $n\geq10^5$. \code{energy()} is
+$O(|E|)$, \code{delta\_energy()} is $O(\deg i)$.
+\end{apibox}
+
+\code{edges} is a \code{list[SparseEdge]}; \code{SparseEdge(i, j, value)}
+holds one coupling $J_{ij}$ (one direction suffices, $i<j$; the model
+symmetrises).
+
+\begin{pycode}
+from qanneal import SparseIsing, SparseEdge
+import numpy as np
+
+n = 5
+edges = [SparseEdge(0, 1, 1.0), SparseEdge(1, 2, -0.5),
+         SparseEdge(2, 3, 0.8), SparseEdge(3, 4, 1.2)]
+ising = SparseIsing(np.zeros(n), edges, n)
+\end{pycode}
+
+\subsection{\code{QUBO}}
+
+\begin{apibox}{QUBO(Q) \;|\; QUBO(entries, n) \;|\; QUBO(bqm)}
+QUBO model, Eq.~\eqref{eq:qubo}. Constructors: dense
+\code{ndarray}; sparse \code{list[(i,j,val)]} or
+\code{dict\{(i,j): val\}} with explicit \code{n}; or a \code{dimod}
+BQM (BINARY or SPIN, auto-converted).
+\end{apibox}
+
+Methods: \code{size()}; \code{to\_ising()} $\to$ \code{DenseIsing},
+implementing the exact conversion Eq.~\eqref{eq:qubo2ising} (symmetrises
+$Q$, applies $x=(1+s)/2$, carries the offset $c$).
+
+% ===========================================================================
+\section{Schedule classes and helpers}
+\label{sec:api-schedules}
+
+\subsection{\code{AnnealSchedule}}
+
+\begin{apibox}{AnnealSchedule.linear(beta\_start, beta\_end, steps)}
+Classical schedule: linear ramp of inverse temperatures. Attribute
+\code{betas: list[float]}.
+\end{apibox}
+
+\subsection{\code{SQASchedule}}
+
+\begin{apibox}{SQASchedule.from\_vectors(betas, gammas)}
+Quantum schedule: paired $(\beta,\Gamma)$ sequences (equal lengths).
+Attributes \code{betas}, \code{gammas}. $\Gamma$ should start high and
+decay geometrically (see the warning in Chapter~\ref{ch:sqa}).
+\end{apibox}
+
+\subsection{Fixed helpers}
+
+\begin{itemize}
+\item \code{auto\_schedule\_sa(steps=50, beta\_start=0.1,
+beta\_end=4.0)} $\to$ \code{AnnealSchedule} --- fixed linear ramp.
+\item \code{auto\_schedule\_sqa(steps=50, beta\_start=0.1,
+beta\_end=4.0, gamma\_start=5.0, gamma\_end=0.01)} $\to$
+\code{SQASchedule} --- fixed ramp with geometric $\Gamma$ decay.
+\end{itemize}
+
+\subsection{Tuned helpers (recommended)}
+
+Mechanics in Sections~\ref{sec:tuned-schedules} and \ref{sec:sqa-tuned}.
+
+\begin{apibox}{auto\_schedule\_sa\_tuned(problem, mode="balanced", steps=None,
+probes=256, seed=1234, n=None, beta\_end\_scale=1.0)}
+Problem-adaptive SA schedule from the probed 75th-percentile
+$|\Delta E|$ and acceptance targets, Eq.~\eqref{eq:beta-from-p}.
+\end{apibox}
+
+\begin{apibox}{auto\_schedule\_sqa\_tuned(..., gamma\_end\_scale=1.0)}
+As above, additionally calibrating the $\Gamma$ ramp
+($\Gamma_{\text{start}}=m_\Gamma\Delta$, geometric decay). Set
+\code{gamma\_end\_scale=0.04} when the schedule feeds CT-PIMC.
+\end{apibox}
+
+\begin{apibox}{auto\_ladder\_sqa\_tuned(problem, replicas=8, mode="balanced",
+probes=256, seed=1234, n=None)}
+$(\beta,\Gamma)$ ladder for SQAPT: geometric $\beta$ rungs, inverse-geometric
+$\Gamma$ rungs. Returns an \code{SQASchedule} whose entries are ladder
+points, not a time sequence.
+\end{apibox}
+
+\subsection{Optimal-schedule helpers}
+
+\begin{apibox}{j\_perp\_from\_beta\_gamma(beta, gamma, trotter\_slices=32)
+$\rightarrow$ float}
+The Trotter coupling of Eq.~\eqref{eq:jperp}:
+$\Jp=\tfrac12\ln\bigl(1/\tanh(\beta\Gamma/M)\bigr)$.
+\end{apibox}
+
+\begin{apibox}{optimal\_j\_perp\_params(problem, mode="balanced",
+trotter\_slices=32, probes=256, seed=1234, n=None)
+$\rightarrow$ (beta, j\_perp\_start, j\_perp\_end)}
+Problem-adaptive endpoints for \code{run\_optimal}: derives
+$(\beta,\Gamma_{\text{start}},\Gamma_{\text{end}})$ from the tuned-schedule
+probe and maps through Eq.~\eqref{eq:jperp}; the returned
+$\beta=\max(4/J_{\mathrm{rms}},1)$.
+\end{apibox}
+
+\begin{apibox}{j\_rms\_from\_problem(problem) $\rightarrow$ float}
+RMS of the non-zero couplings, $J_{\mathrm{rms}}=\sqrt{\langle
+J_{ij}^2\rangle}$; accepts ndarray, DenseIsing, BQM or graph.
+\end{apibox}
+
+% ===========================================================================
+\section{Annealer classes}
+\label{sec:api-annealers}
+
+Low-level API; most users should call \code{solve()}. All annealers take an
+optional \code{backend="cpu"} argument and support \code{set\_seed(int)}.
+
+\subsection{\code{Annealer}}
+
+\begin{apibox}{Annealer(hamiltonian, schedule);\;\; run(sweeps\_per\_beta,
+observer=None) $\rightarrow$ AnnealResult}
+Single-chain simulated annealing (Chapter~\ref{ch:sa}). Optional
+\code{MetricsObserver} / \code{StateTraceObserver}.
+\end{apibox}
+
+\subsection{\code{ReplicaAnnealer}}
+
+\begin{apibox}{ReplicaAnnealer(hamiltonian, schedule, replicas);\;\;
+run(sweeps\_per\_beta) $\rightarrow$ MultiAnnealResult}
+$R$ independent SA chains, OpenMP-parallel
+(Section~\ref{sec:replica-annealer}).
+\end{apibox}
+
+\subsection{\code{ParallelTemperingAnnealer}}
+
+\begin{apibox}{ParallelTemperingAnnealer(hamiltonian, betas);\;\;
+run(sweeps\_per\_step, steps, swap\_interval=1) $\rightarrow$
+ParallelTemperingResult}
+Classical replica exchange with the swap rule Eq.~\eqref{eq:pt-swap}
+(Section~\ref{sec:classical-pt}).
+\end{apibox}
+
+\subsection{\code{SQAAnnealer}}
+
+\begin{apibox}{SQAAnnealer(hamiltonian, schedule, trotter\_slices,
+replicas=1)}
+Suzuki--Trotter SQA (Chapter~\ref{ch:sqa}).
+\end{apibox}
+
+\begin{apibox}{run(sweeps\_per\_beta, worldline\_sweeps, cluster\_sweeps=0,
+continuous\_time\_slices=0, observer=None) $\rightarrow$ SQAResult}
+Standard $(\beta,\Gamma)$-schedule run with the moves of
+Section~\ref{sec:sqa-moves}.
+\end{apibox}
+
+\begin{apibox}{run\_optimal(beta, j\_perp\_start, j\_perp\_end, eps\_tilde,
+alpha=15/14, num\_steps=100, sweeps\_per\_step=20, worldline\_sweeps=0,
+cluster\_sweeps=0, calib\_probes=12, calib\_sweeps=10, debug\_csv\_path="",
+beta\_ramp\_fraction=0.3, beta\_ramp\_start=0.1) $\rightarrow$ SQAResult}
+Adaptive $\Jp$ schedule (Chapter~\ref{ch:optimal}).
+\code{eps\_tilde<=0} triggers budget calibration + inverse-CDF trajectory;
+two-phase $\beta$ ramp controlled by \code{beta\_ramp\_fraction}.
+Raises \code{ValueError} if \code{num\_steps==0}, if
+\code{j\_perp\_end<=j\_perp\_start}, or if all sweep counts are zero.
+\end{apibox}
+
+\subsection{\code{SQAParallelTemperingAnnealer}}
+
+\begin{apibox}{SQAParallelTemperingAnnealer(hamiltonian, betas, gammas,
+trotter\_slices)}
+SQA replica exchange on a $(\beta,\Gamma)$ ladder
+(Chapter~\ref{ch:sqapt}).
+\end{apibox}
+
+\begin{apibox}{run(sweeps\_per\_step, worldline\_sweeps, steps,
+swap\_interval=1, cluster\_sweeps=0, continuous\_time\_slices=0)
+$\rightarrow$ SQAParallelTemperingResult}
+Static-ladder run with the action-based swap rule
+Eq.~\eqref{eq:sqapt-swap}.
+\end{apibox}
+
+\begin{apibox}{run\_optimal(num\_steps, sweeps\_per\_step, worldline\_sweeps,
+eps\_tilde, alpha=15/14, j\_perp\_end=0.0, cluster\_sweeps=0,
+swap\_interval=1, continuous\_time\_slices=0, calib\_probes=12,
+calib\_sweeps=10, debug\_csv\_path="") $\rightarrow$
+SQAParallelTemperingResult}
+Shared-$\Jp$ adaptive schedule across the ladder
+(Section~\ref{sec:sqapt-optimal}); same calibration semantics as the SQA
+version, no two-phase ramp. \code{j\_perp\_end=0.0} is a sentinel resolving
+to the coldest rung's coupling (emits a warning) --- pass an explicit value
+in scripts. Raises \code{ValueError} for zero \code{num\_steps} or
+\code{swap\_interval}, or if all sweep counts are zero.
+\end{apibox}
+
+\subsection{\code{CTPIMCAnnealer}}
+
+\begin{apibox}{CTPIMCAnnealer(ising, schedule, qubits\_per\_update=1,
+qubits\_per\_chain=1)\quad — general mode}
+Continuous-time PIMC for arbitrary Dense/Sparse Ising
+(Chapter~\ref{ch:ctpimc}).
+\end{apibox}
+
+\begin{apibox}{CTPIMCAnnealer(Lperiodic, inv\_temp\_over\_J, gamma\_over\_J,
+initial\_condition=0, qubits\_per\_update=1, qubits\_per\_chain=1)\quad
+— lattice mode}
+Cylindrical-lattice experiments; \code{Lperiodic} must be a multiple of 6;
+\code{initial\_condition}: 0 random, 1 ferro, $-1$ antiferro.
+\end{apibox}
+
+\begin{apibox}{run(sweeps\_per\_beta, reads=1) $\rightarrow$ CTPIMCResult}
+Worldline cluster sweeps per schedule step; best over \code{reads} returned,
+trace averaged over reads. $\Gamma$ must stay $>0$.
+\end{apibox}
+
+% ===========================================================================
+\section{Result classes}
+\label{sec:api-results}
+
+\begin{center}
+\footnotesize
+\begin{tabular}{@{}lp{4.2cm}p{6.6cm}@{}}
+\toprule
+\textbf{Class} & \textbf{Produced by} & \textbf{Fields}\\
+\midrule
+\code{AnnealResult} & \code{Annealer.run} &
+\code{best\_state}, \code{best\_energy}, \code{energy\_trace}\\
+\code{MultiAnnealResult} & \code{ReplicaAnnealer.run} &
+\code{global\_best\_state}, \code{global\_best\_energy}, \code{replicas},
+\code{average\_energy\_trace}, \code{average\_magnetization\_trace}\\
+\code{ParallelTemperingResult} & \code{ParallelTemperingAnnealer.run} &
+\code{best\_state}, \code{best\_energy}, \code{final\_states},
+\code{final\_energies}, \code{average\_energy\_trace},
+\code{swap\_acceptance\_trace}\\
+\code{SQAResult} & \code{SQAAnnealer.run/run\_optimal} &
+\code{best\_state}, \code{best\_energy}, \code{energy\_trace},
+\code{j\_perp\_trace}, plus calibration fields (below)\\
+\code{SQAParallelTemperingResult} & \code{SQAParallelTemperingAnnealer} &
+as \code{ParallelTemperingResult} + \code{j\_perp\_trace} + calibration
+fields\\
+\code{CTPIMCResult} & \code{CTPIMCAnnealer.run} &
+\code{best\_state}, \code{best\_energy}, \code{energy\_trace}\\
+\code{State} & (container) & \code{spins} ($\pm1$ int8 list),
+\code{size()}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Adaptive-schedule fields on \code{SQAResult} /
+\code{SQAParallelTemperingResult}}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{9.4cm}@{}}
+\toprule
+\textbf{Field} & \textbf{Meaning}\\
+\midrule
+\code{j\_perp\_trace} & Realised $\Jp$ per adaptive step; empty for
+standard \code{run()}; monotone non-decreasing;
+\code{len == len(energy\_trace)}.\\
+\code{chi\_B\_trace} & Online $\chiB$ measured at each step.\\
+\code{calibrated\_eps\_tilde} & The $\epst$ from
+Eq.~\eqref{eq:calibrated-eps} (or the value you passed).\\
+\code{j\_perp\_start}, \code{resolved\_j\_perp\_end} & The endpoints the run
+actually used after sentinel/auto resolution.\\
+\code{final\_j\_perp} & $\Jp$ reached at the last step
+($\approx$ \code{resolved\_j\_perp\_end} when calibrated).\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ===========================================================================
+\section{Observer classes}
+\label{sec:api-observers}
+
+Observers hook into the annealing loop for diagnostics without touching the
+algorithm. Attaching a sweep-level observer to \code{SQAAnnealer} disables
+its OpenMP fast path (observation is inherently sequential), so use them for
+analysis runs, not production sweeps.
+
+\begin{center}
+\footnotesize
+\begin{tabular}{@{}lp{2.4cm}p{7.4cm}@{}}
+\toprule
+\textbf{Class} & \textbf{Engine} & \textbf{Captures}\\
+\midrule
+\code{MetricsObserver} & SA &
+\code{energy\_trace}, \code{magnetization\_trace} per step;
+\code{clear()} resets.\\
+\code{StateTraceObserver(stride=1)} & SA &
+full \code{state\_trace} plus \code{energy\_trace},
+\code{step\_trace}, \code{sweep\_trace}, \code{beta\_trace} per recorded
+sweep.\\
+\code{SQAMetricsObserver} & SQA &
+slice/replica-averaged \code{energy\_trace},
+\code{magnetization\_trace}.\\
+\code{SQAStateTraceObserver(stride=1)} & SQA &
+\code{avg\_energy\_trace}, \code{replica\_energy\_trace},
+\code{state\_trace}, \code{beta\_trace}, \code{gamma\_trace},
+\code{phase\_trace} (Slice/Worldline/Cluster), \code{step\_trace},
+\code{replica\_trace}, \code{sweep\_trace}; dimensions \code{replicas},
+\code{slices}, \code{spins}.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Utility functions}
+
+\begin{pycode}
+from qanneal import magnetization, overlap
+
+magnetization(spins)        # sum(s_i) / n
+overlap(spins_a, spins_b)   # sum(a_i * b_i) / n
+\end{pycode}
+
+Both accept \code{list}, \code{np.ndarray}, or a \code{State}.
+Magnetisation tracks global ordering during an anneal; overlap between two
+reads' solutions measures how reproducibly a problem's ground state is
+found (overlap $\approx1$: same solution up to global flip).
