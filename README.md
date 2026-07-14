@@ -1,8 +1,8 @@
 # qanneal
 
-**Research-grade Ising/QUBO optimizer** — version 1.0.0
+**Research-grade Ising/QUBO optimizer** — version 2.0.0
 
-Five annealing engines from classical SA to the closest available CPU simulation of quantum annealing, plus a theoretically-grounded **optimal adaptive J⊥ schedule** derived from the local adiabaticity condition.
+Five annealing engines from classical SA to the closest available CPU simulation of quantum annealing, plus a theoretically-grounded **optimal adaptive J⊥ schedule** derived from the local adiabaticity condition. Problems can be quadratic (Ising/QUBO) or **higher-order (HUBO)** *(new in 2.0.0)*.
 
 | Method | Short name | What it simulates |
 |--------|-----------|-------------------|
@@ -80,6 +80,21 @@ diff  = abs(float(np.dot(nums, spins)))
 print(f"Partition diff: {diff}")  # 0.0 = perfect split
 ```
 
+### Solve a higher-order problem (HUBO) *(new in 2.0.0)*
+
+```python
+from qanneal import solve
+
+# E(s) = 0.2*s0 - 1.0*s0*s1*s2 + 0.5*s1*s2  (3-body, 2-body, and linear terms)
+# Keys: an int is a 1-body term, a tuple/list/set of any length >= 2 is a
+# higher-order term. solve() detects this automatically -- no separate API.
+terms = {(0, 1, 2): -1.0, (1, 2): 0.5, 0: 0.2}
+
+result = solve(terms, method="sa", sweeps_per_beta=10, seed=0)
+print(result.best_sample)   # e.g. [-1, -1, 1]
+print(result.best_energy)   # -1.7
+```
+
 ---
 
 ## The Five Methods — When to Use Which
@@ -141,6 +156,17 @@ E(s) = Σᵢ hᵢ sᵢ  +  Σᵢ<ⱼ Jᵢⱼ sᵢ sⱼ  +  c
 **Conversion**: `x = (s + 1) / 2` — QUBO uses bits, Ising uses spins.
 `solve(..., return_bits=True)` converts the result for you.
 
+**HUBO** (higher-order, spins s ∈ {−1, +1}) *(new in 2.0.0)*:
+```
+E(s) = c + Σᵢ hᵢ sᵢ + Σₜ Jₜ · Πᵢ∈vars(t) sᵢ
+```
+Terms of any arity (not just pairs) are supported natively — pass a `{vars: coeff}` mapping,
+where `vars` is an int (linear) or a tuple/list/set of spin indices (any degree ≥ 2), directly
+to `solve()` or build a `HigherOrderIsing(terms, n)` explicitly. Because it derives from the
+same `Hamiltonian` interface as `DenseIsing`/`SparseIsing`, every solver (`sa`, `sqa`, `sqapt`,
+`ctpimc`, `sqa_chi`) accepts it unchanged. `dimod.BinaryPolynomial` inputs are also detected and
+converted automatically.
+
 ### Hamiltonian models
 
 | Class | Memory | Best for |
@@ -148,6 +174,7 @@ E(s) = Σᵢ hᵢ sᵢ  +  Σᵢ<ⱼ Jᵢⱼ sᵢ sⱼ  +  c
 | `DenseIsing(h, J, c)` | O(n²) | n ≤ ~3 000, fully connected |
 | `SparseIsing(h, edges, n, c)` | O(n + \|E\|) | sparse graphs, n up to 100 000+ |
 | `QUBO(Q)` | O(n²) | binary variables; call `.to_ising()` |
+| `HigherOrderIsing(terms, n)` *(new in 2.0.0)* | O(terms · degree) | 3+-body interactions (HUBO) |
 
 ---
 

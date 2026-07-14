@@ -1,4 +1,4 @@
-# qanneal API Reference — v1.0.0
+# qanneal API Reference — v2.0.0
 
 Complete reference for every public class, function, and parameter.
 
@@ -19,6 +19,19 @@ Complete reference for every public class, function, and parameter.
 ---
 
 ## What's New
+
+**2.0.0**
+- **Native higher-order Ising (HUBO) support**: new `HigherOrderIsing(terms, n)` model class,
+  `E(s) = c + Σᵢ hᵢ sᵢ + Σₜ Jₜ Πᵢ∈vars(t) sᵢ`, for terms of arbitrary arity (not just pairs).
+  Implements the same `Hamiltonian` interface as `DenseIsing`/`SparseIsing`, so every solver
+  (`sa`/`sqa`/`sqapt`/`ctpimc`/`sqa_chi`) accepts it unchanged. Local-field updates cost
+  O(term arity) per flip, incrementally maintained — bounded-degree sparse HUBO is as cheap as
+  sparse quadratic.
+- `solve()` auto-detects higher-order problems: a `dict` with any non-pair key (a bare `int` for
+  a linear term, or a tuple/list/set of length ≠ 2) routes to `HigherOrderIsing` instead of
+  `QUBO`. `dimod.BinaryPolynomial` (SPIN or BINARY) is also detected and converted.
+- Fixed a Windows (MSVC) build failure in `SQAParallelTemperingAnnealer`'s OpenMP loops (unsigned
+  loop-control variable; MSVC's OpenMP 2.0 requires signed).
 
 **1.0.0**
 - New standalone solver method **`sqa_chi`** (`SQAChiAnnealer`, sibling to `sa`/`sqa`/`sqapt`/
@@ -193,6 +206,59 @@ ising = qubo.to_ising()          # DenseIsing
 bits = [0, 1]
 print(qubo.size())               # 2
 ```
+
+---
+
+### `HigherOrderIsing(terms, n)` / `HigherOrderIsing(terms)` / `HigherOrderIsing(entries, n)` *(new in 2.0.0)*
+
+Native higher-order (HUBO) Ising model — spin terms of arbitrary arity, not just pairs.
+
+**Energy**: `E(s) = c + Σᵢ hᵢ sᵢ + Σₜ Jₜ · Πᵢ∈vars(t) sᵢ`,  s ∈ {−1, +1}
+
+**Constructors**
+
+| Signature | Description |
+|-----------|-------------|
+| `HigherOrderIsing(terms: dict, n: int)` | `terms` maps `vars → coeff`. `vars` is an `int` (linear term) or a `tuple`/`list`/`set` of spin indices (any degree ≥ 2). `n` is the total spin count. |
+| `HigherOrderIsing(terms: dict)` | Same, with `n` inferred as `max(index) + 1`. |
+| `HigherOrderIsing(entries: list[tuple[list[int], float]], n: int)` | Entry-list form: `[((i, j, k, ...), coeff), ...]`. |
+
+Repeated indices within one term cancel by spin parity (`sᵢ² = 1`, so an even count vanishes,
+odd collapses to one factor); identical supports across terms are merged by summing coefficients.
+
+**Methods**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `size()` | `int` | Number of spins |
+| `energy(spins)` | `float` | Full energy for a spin configuration |
+| `delta_energy(spins, flip)` | `float` | Energy change from flipping one spin |
+| `max_degree()` | `int` | Largest term arity present |
+| `num_terms()` | `int` | Number of degree ≥ 2 terms (after merging) |
+| `constant()` | `float` | Folded constant offset `c` |
+
+**Complexity**: `delta_energy(flip)` is O(Σ arity of terms containing `flip`) — independent of
+total problem size `n` for bounded-degree sparse HUBO.
+
+**Example**
+```python
+from qanneal import HigherOrderIsing, solve
+
+# 3-body term, a 2-body term, and a linear (1-body) term:
+#   E(s) = 0.2*s0 - 1.0*s0*s1*s2 + 0.5*s1*s2
+terms = {(0, 1, 2): -1.0, (1, 2): 0.5, 0: 0.2}
+
+ham = HigherOrderIsing(terms, n=3)
+print(ham.max_degree(), ham.num_terms())   # 3 2
+
+# solve() detects the higher-order dict automatically — no need to build
+# HigherOrderIsing by hand:
+result = solve(terms, method="sa", sweeps_per_beta=10)
+print(result.best_sample, result.best_energy)
+```
+
+`dimod.BinaryPolynomial` is also accepted directly by `solve()`; `BINARY` vartype polynomials
+are expanded via `x = (1 + s) / 2` and results are returned as bits.
 
 ---
 
@@ -995,11 +1061,15 @@ runs multiple reads, and returns the best result.
 
 **Supported problem types** (auto-detected):
 - `DenseIsing`, `SparseIsing` — passed directly
+- `HigherOrderIsing` *(2.0.0)* — passed directly
 - `QUBO` — converted via `to_ising()`
 - `np.ndarray` shape (n,n) — interpreted as QUBO matrix
 - `dict{(i,j): float}` — sparse QUBO dict
+- `dict` with any non-pair key (bare `int`, or tuple/list/set of length ≠ 2) *(2.0.0)* — native
+  HUBO, routed to `HigherOrderIsing`
 - `list[(i,j,float)]` — sparse QUBO entry list
 - `dimod.BinaryQuadraticModel` — converted (requires dimod)
+- `dimod.BinaryPolynomial` *(2.0.0)* — converted to `HigherOrderIsing` (requires dimod)
 - `networkx.Graph` — node `bias`, edge `weight` attributes (requires networkx)
 
 **Full parameter table**
@@ -1103,6 +1173,7 @@ Umbrella include:
 | `DenseIsing` | `dense_ising.hpp` |
 | `SparseIsing`, `SparseEdge` | `sparse_ising.hpp` |
 | `QUBO` | `qubo.hpp` |
+| `HigherOrderIsing` | `higher_order_ising.hpp` |
 | `AnnealSchedule` | `schedule.hpp` |
 | `SQASchedule` | `sqa_schedule.hpp` |
 | `Annealer` | `annealer.hpp` |

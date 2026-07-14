@@ -9,10 +9,11 @@ How the pieces fit together, from problem encoding to result extraction.
 ```
 User problem
     │
-    ├─ QUBO(Q)          ─── .to_ising() ──────────┐
-    ├─ DenseIsing(h,J)  ─────────────────────────────► Hamiltonian
-    ├─ SparseIsing(h,E) ─────────────────────────────►  (energy/delta_energy)
-    ├─ np.ndarray / dict / BQM / nx.Graph  ─ auto ──┘
+    ├─ QUBO(Q)              ─── .to_ising() ──────┐
+    ├─ DenseIsing(h,J)      ─────────────────────────► Hamiltonian
+    ├─ SparseIsing(h,E)     ─────────────────────────►  (energy/delta_energy)
+    ├─ HigherOrderIsing(t)  ─────────────────────────►  (HUBO, arbitrary arity)
+    ├─ np.ndarray / dict / BQM / BinaryPolynomial / nx.Graph  ─ auto ──┘
     │
     ▼
 solve(problem, method=...) ── schedule auto-tuned from problem
@@ -35,6 +36,7 @@ solve(problem, method=...) ── schedule auto-tuned from problem
 |-------|---------|-----------|-----------------|
 | `DenseIsing` | n×n J matrix | O(n²) | O(n) via local-field cache |
 | `SparseIsing` | edge list + adjacency | O(\|E\|) | O(degree) |
+| `HigherOrderIsing` | CSR-style term list + incidence | O(terms · degree) | O(Σ arity of terms touching the flipped spin) |
 | `QUBO` | n×n Q matrix | — | Converts to `DenseIsing` |
 
 **Local-field caching**: `compute_local_fields()` pre-computes `fᵢ = hᵢ + Σⱼ Jᵢⱼ sⱼ`.
@@ -192,11 +194,14 @@ SolveResult                ← solve()   (Python wrapper)
 
 ```python
 _normalize_problem(problem)
-    ├── isinstance(problem, DenseIsing/SparseIsing) → passthrough
+    ├── isinstance(problem, DenseIsing/SparseIsing/HigherOrderIsing) → passthrough
     ├── isinstance(problem, QUBO)               → .to_ising()
     ├── isinstance(problem, np.ndarray)          → QUBO(Q).to_ising()
-    ├── isinstance(problem, dict/list)           → QUBO(entries, n).to_ising()
+    ├── isinstance(problem, dict)                → non-pair key? HigherOrderIsing(terms, n)
+    │                                               else QUBO(entries, n).to_ising()
+    ├── isinstance(problem, list)                → QUBO(entries, n).to_ising()
     ├── isinstance(problem, dimod.BQM)           → QUBO(bqm).to_ising()
+    ├── isinstance(problem, dimod.BinaryPolynomial) → HigherOrderIsing (SPIN or BINARY-expanded)
     └── isinstance(problem, nx.Graph)            → _qubo_from_graph().to_ising()
 ```
 
@@ -244,6 +249,7 @@ qlatannealv4/
 │   ├── hamiltonian.hpp       Abstract base class
 │   ├── dense_ising.hpp       DenseIsing
 │   ├── sparse_ising.hpp      SparseIsing, SparseEdge
+│   ├── higher_order_ising.hpp HigherOrderIsing (HUBO)
 │   ├── qubo.hpp              QUBO
 │   ├── schedule.hpp          AnnealSchedule
 │   ├── sqa_schedule.hpp      SQASchedule

@@ -3,6 +3,21 @@
 All notable changes to **qanneal** are documented here. This project follows semantic
 versioning (`MAJOR.MINOR.PATCH`).
 
+## 2.0.0
+
+- **Native higher-order Ising (HUBO) support**: new `HigherOrderIsing(terms, n)` Hamiltonian
+  supporting spin terms of arbitrary arity, `E(s) = c + Σᵢ hᵢ sᵢ + Σₜ Jₜ Π sᵢ`. Derives from the
+  same `Hamiltonian` interface as `DenseIsing`/`SparseIsing`, so every existing solver
+  (`sa`/`sqa`/`sqapt`/`ctpimc`/`sqa_chi`) accepts it with no further wiring. O(term arity) local
+  fields with incremental updates, so bounded-degree sparse HUBO flips cost the same as sparse
+  quadratic ones. `solve()` now routes `{vars: coeff}` dict problems with any non-pair key (or a
+  `dimod.BinaryPolynomial`) onto the native HUBO path automatically. Tests:
+  `tests/test_higher_order_ising.cpp`.
+- **Fixed Windows (MSVC) build**: `SQAParallelTemperingAnnealer`'s OpenMP loops used an unsigned
+  (`std::size_t`) loop-control variable, which GCC/Clang (OpenMP 3.0+) accept but MSVC's
+  OpenMP-2.0-only `cl.exe` rejects (`error C3016`). Switched to the signed-loop-variable pattern
+  already used elsewhere in the codebase.
+
 ## 1.0.0
 
 First stable release.

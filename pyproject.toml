@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "qanneal"
-version = "1.0.0"
+version = "2.0.0"
 description = "Research-grade simulated quantum annealing toolkit"
 readme = "README.md"
 requires-python = ">=3.11"
