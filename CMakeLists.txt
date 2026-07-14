@@ -23,6 +23,7 @@ add_library(qanneal_core
     src/ctpimc_annealer.cpp
     src/dense_ising.cpp
     src/sparse_ising.cpp
+    src/higher_order_ising.cpp
     src/sqa_annealer.cpp
     src/sqa_chi_annealer.cpp
     src/sqa_parallel_tempering.cpp
@@ -178,6 +179,10 @@ if(QANNEAL_BUILD_TESTS)
     add_executable(qanneal_sqa_chi_tests tests/test_sqa_chi_annealer.cpp)
     target_link_libraries(qanneal_sqa_chi_tests PRIVATE qanneal_core)
     add_test(NAME qanneal_sqa_chi_tests COMMAND qanneal_sqa_chi_tests)
+
+    add_executable(qanneal_hubo_tests tests/test_higher_order_ising.cpp)
+    target_link_libraries(qanneal_hubo_tests PRIVATE qanneal_core)
+    add_test(NAME qanneal_hubo_tests COMMAND qanneal_hubo_tests)
 endif()
 
 install(TARGETS qanneal_core EXPORT qannealTargets

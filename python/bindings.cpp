@@ -10,6 +10,7 @@
 #include "qanneal/ctpimc_annealer.hpp"
 #include "qanneal/dense_ising.hpp"
 #include "qanneal/hamiltonian.hpp"
+#include "qanneal/higher_order_ising.hpp"
 #include "qanneal/metrics.hpp"
 #include "qanneal/metrics_observer.hpp"
 #include "qanneal/parallel_tempering.hpp"
@@ -60,6 +61,48 @@ std::vector<int8_t> seq_to_spins(const py::sequence &seq) {
         spins.push_back(static_cast<int8_t>(py::cast<int>(item)));
     }
     return spins;
+}
+
+// Parse one HUBO term key (a tuple/list/set of indices, or a bare int) into a
+// vector of spin indices.
+std::vector<std::size_t> parse_vars(const py::handle &key) {
+    std::vector<std::size_t> vars;
+    if (py::isinstance<py::int_>(key)) {
+        vars.push_back(py::cast<std::size_t>(key));
+        return vars;
+    }
+    if (py::isinstance<py::iterable>(key)) {
+        for (auto v : py::reinterpret_borrow<py::iterable>(key)) {
+            vars.push_back(py::cast<std::size_t>(v));
+        }
+        return vars;
+    }
+    throw std::invalid_argument(
+        "HigherOrderIsing term key must be an int or an iterable of ints.");
+}
+
+// Turn a Python mapping {vars: coeff} (vars = tuple/list/set/int) into the
+// native RawTerm list used by HigherOrderIsing. When infer_n is set, n is the
+// largest index seen + 1.
+std::vector<qanneal::HigherOrderIsing::RawTerm>
+dict_to_raw_terms(const py::dict &terms, std::size_t &n, bool infer_n) {
+    std::vector<qanneal::HigherOrderIsing::RawTerm> raw;
+    raw.reserve(terms.size());
+    std::size_t max_idx = 0;
+    bool any = false;
+    for (auto item : terms) {
+        std::vector<std::size_t> vars = parse_vars(item.first);
+        const double coeff = py::cast<double>(item.second);
+        for (std::size_t v : vars) {
+            max_idx = std::max(max_idx, v);
+            any = true;
+        }
+        raw.push_back({std::move(vars), coeff});
+    }
+    if (infer_n) {
+        n = any ? (max_idx + 1) : 0;
+    }
+    return raw;
 }
 
 } // namespace
@@ -228,6 +271,47 @@ PYBIND11_MODULE(_qanneal, m) {
         }), py::arg("entries"), py::arg("n"))
         .def("size", &qanneal::QUBO::size)
         .def("to_ising", &qanneal::QUBO::to_ising);
+
+    // Native higher-order Ising (HUBO): E = c + sum_i h_i s_i + sum_t J_t prod s.
+    // Derives from Hamiltonian, so every annealer (SA/SQA/SQA-PT/replica/
+    // CT-PIMC) accepts it with no further wiring.
+    py::class_<qanneal::HigherOrderIsing, qanneal::Hamiltonian,
+               std::shared_ptr<qanneal::HigherOrderIsing>>(m, "HigherOrderIsing")
+        // From a mapping {vars: coeff}; vars is a tuple/list/set of spin indices
+        // (or a bare int). n is required so isolated spins are represented.
+        .def(py::init([](py::dict terms, std::size_t n) {
+            std::size_t inferred = n;
+            auto raw = dict_to_raw_terms(terms, inferred, /*infer_n=*/false);
+            return qanneal::HigherOrderIsing(n, raw);
+        }), py::arg("terms"), py::arg("n"))
+        // From a mapping with n inferred from the largest index present.
+        .def(py::init([](py::dict terms) {
+            std::size_t n = 0;
+            auto raw = dict_to_raw_terms(terms, n, /*infer_n=*/true);
+            if (n == 0) {
+                throw std::invalid_argument("HigherOrderIsing needs at least one term.");
+            }
+            return qanneal::HigherOrderIsing(n, raw);
+        }), py::arg("terms"))
+        // From an entry list [((i,j,k,...), coeff), ...].
+        .def(py::init([](const std::vector<std::pair<std::vector<std::size_t>, double>> &entries,
+                         std::size_t n) {
+            std::vector<qanneal::HigherOrderIsing::RawTerm> raw(entries.begin(), entries.end());
+            return qanneal::HigherOrderIsing(n, raw);
+        }), py::arg("entries"), py::arg("n"))
+        .def("size", &qanneal::HigherOrderIsing::size)
+        .def("max_degree", &qanneal::HigherOrderIsing::max_degree)
+        .def("num_terms", &qanneal::HigherOrderIsing::num_terms)
+        .def("constant", &qanneal::HigherOrderIsing::constant)
+        .def("energy", [](const qanneal::HigherOrderIsing &ham, const py::sequence &spins) {
+            const std::vector<int8_t> s = seq_to_spins(spins);
+            return ham.energy(s.data(), s.size());
+        })
+        .def("delta_energy", [](const qanneal::HigherOrderIsing &ham,
+                                const py::sequence &spins, std::size_t flip) {
+            const std::vector<int8_t> s = seq_to_spins(spins);
+            return ham.delta_energy(s.data(), s.size(), flip);
+        });
 
     py::class_<qanneal::AnnealSchedule>(m, "AnnealSchedule")
         .def(py::init<>())

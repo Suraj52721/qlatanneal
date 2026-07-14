@@ -29,6 +29,7 @@ __all__ = [
     "SparseEdge",
     "SparseIsing",
     "QUBO",
+    "HigherOrderIsing",
     "AnnealSchedule",
     "Observer",
     "MetricsObserver",

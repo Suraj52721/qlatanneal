@@ -14,6 +14,7 @@ from ._qanneal import (
     DenseIsing,
     SparseIsing,
     QUBO,
+    HigherOrderIsing,
 )
 
 try:
@@ -215,10 +216,78 @@ def _qubo_from_graph(graph: Any) -> Tuple[QUBO, List[Any]]:
     return QUBO(Q), nodes
 
 
+def _is_higher_order_keys(keys: Iterable[Any]) -> bool:
+    # A mapping is higher-order if any key is a collection whose length != 2
+    # (a 3+-body or 1-body interaction). Plain (i, j) pairs stay on the QUBO path.
+    for k in keys:
+        if isinstance(k, (tuple, list, frozenset, set)):
+            if len(k) != 2:
+                return True
+        else:
+            # A bare int key is a 1-body (linear) term -> higher-order dict form.
+            return True
+    return False
+
+
+def _hubo_from_dict(problem: dict, n: Optional[int]) -> Tuple[HigherOrderIsing, List[Any]]:
+    # Build a native spin HUBO from a mapping {vars: coeff}, where vars is a
+    # tuple/list/set of spin indices (or a bare int for a linear term).
+    max_idx = -1
+    for k in problem:
+        idxs = (k,) if isinstance(k, int) else tuple(k)
+        for i in idxs:
+            max_idx = max(max_idx, int(i))
+    size = n if n is not None else max_idx + 1
+    ham = HigherOrderIsing(problem, size)
+    return ham, list(range(size))
+
+
+def _hubo_from_binary_polynomial(poly: Any) -> Tuple[HigherOrderIsing, List[Any], bool]:
+    # Convert a dimod BinaryPolynomial to a native spin HUBO.
+    #   - SPIN vartype: coefficients map straight onto spin terms.
+    #   - BINARY vartype: expand x_i = (1 - s_i)/2 into spin terms, so the
+    #     reported energy matches the binary polynomial and bits are returned.
+    # Returns (ham, var_order, is_binary).
+    variables = list(poly.variables)
+    index = {v: i for i, v in enumerate(variables)}
+    n = len(variables)
+    vartype = str(getattr(poly, "vartype", "SPIN"))
+    is_binary = "BINARY" in vartype
+
+    spin_terms: dict = {}
+
+    def add(vars_tuple: Tuple[int, ...], coeff: float) -> None:
+        key = tuple(sorted(vars_tuple))
+        spin_terms[key] = spin_terms.get(key, 0.0) + coeff
+
+    for term, bias in poly.items():
+        bias = float(bias)
+        idxs = [index[v] for v in term]
+        if not is_binary:
+            add(tuple(idxs), bias)
+            continue
+        # x = (1 + s)/2  (library convention: spin +1 -> bit 1, matching the
+        # downstream ((spins+1)//2) bit readout and QUBO.to_ising).
+        #   prod_k x_{i_k} = (1/2^d) * prod_k (1 + s_{i_k})
+        #                  = (1/2^d) * sum_{S subset} prod_{i in S} s_i
+        # Every subset contributes with a +1 sign.
+        d = len(idxs)
+        scale = bias / (2 ** d) if d > 0 else bias
+        for mask in range(1 << d):
+            subset = [idxs[b] for b in range(d) if (mask >> b) & 1]
+            add(tuple(subset), scale)
+
+    ham = HigherOrderIsing(spin_terms, n)
+    return ham, variables, is_binary
+
+
 def _normalize_problem(problem: Any,
                        n: Optional[int] = None) -> Tuple[Any, List[Any], bool]:
     # Returns (ising, var_order, is_qubo)
     if isinstance(problem, (DenseIsing, SparseIsing)):
+        return problem, list(range(problem.size())), False
+
+    if isinstance(problem, HigherOrderIsing):
         return problem, list(range(problem.size())), False
 
     if isinstance(problem, QUBO):
@@ -229,6 +298,12 @@ def _normalize_problem(problem: Any,
         qubo = QUBO(problem)
         return qubo.to_ising(), var_order, True
 
+    if dimod is not None and isinstance(problem, dimod.BinaryPolynomial):
+        # Native higher-order path. BINARY polynomials return bits; SPIN ones
+        # return spins (is_qubo mirrors "returns bits").
+        ham, var_order, is_binary = _hubo_from_binary_polynomial(problem)
+        return ham, var_order, is_binary
+
     if nx is not None and isinstance(problem, nx.Graph):
         qubo, var_order = _qubo_from_graph(problem)
         return qubo.to_ising(), var_order, True
@@ -238,6 +313,11 @@ def _normalize_problem(problem: Any,
         return qubo.to_ising(), list(range(problem.shape[0])), True
 
     if isinstance(problem, dict):
+        # A mapping with any non-pair key is a native spin HUBO; plain (i, j)
+        # pair keys stay on the quadratic QUBO path (unchanged behavior).
+        if _is_higher_order_keys(problem.keys()):
+            ham, var_order = _hubo_from_dict(problem, n)
+            return ham, var_order, False
         if n is None:
             n = _guess_n_from_entries([(i, j, float(v)) for (i, j), v in problem.items()])
         qubo = QUBO(problem, n)
@@ -250,8 +330,9 @@ def _normalize_problem(problem: Any,
         qubo = QUBO(entries, n)
         return qubo.to_ising(), list(range(n)), True
 
-    raise ValueError("Unsupported problem type. Provide QUBO, DenseIsing, SparseIsing, dimod BQM, "
-                     "networkx graph, ndarray, dict, or entries list.")
+    raise ValueError("Unsupported problem type. Provide QUBO, DenseIsing, SparseIsing, "
+                     "HigherOrderIsing, dimod BQM/BinaryPolynomial, networkx graph, ndarray, "
+                     "dict, or entries list.")
 
 
 def _iter_reads(total: int, enabled: bool, logger: logging.Logger) -> Iterable[int]:
