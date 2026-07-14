@@ -40,4 +40,13 @@ cmake.define = { QANNEAL_BUILD_PYTHON = "ON" }
 # The SDist is built from git-tracked files (build artifacts and compiled extensions are
 # gitignored). README/CHANGELOG/LICENSE/NOTICE are pulled in via the [project] metadata.
 sdist.include = ["CHANGELOG.md"]
-sdist.exclude = ["examples/**/*.png", "examples/**/*.json", "docs/latex", "notebooks"]
+sdist.exclude = [
+  ".claude",
+  ".github",
+  ".DS_Store",
+  "**/.DS_Store",
+  "examples/**/*.png",
+  "examples/**/*.json",
+  "docs/latex",
+  "notebooks",
+]

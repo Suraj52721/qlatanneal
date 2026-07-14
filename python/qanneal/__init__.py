@@ -13,7 +13,13 @@ from .solver import (  # noqa: F401
     optimal_j_perp_params,
     j_rms_from_problem,
 )
-from .gui import launch_graph_editor  # noqa: F401
+
+
+def launch_graph_editor() -> None:
+    """Launch the optional Tk GUI."""
+    from .gui import launch_graph_editor as _launch_graph_editor
+
+    _launch_graph_editor()
 
 __version__ = version_string()
 
