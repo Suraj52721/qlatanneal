@@ -188,7 +188,8 @@ SQAParallelTemperingResult SQAParallelTemperingAnnealer::run(std::size_t sweeps_
 #ifdef _OPENMP
 #pragma omp parallel for if(replicas > 1) schedule(static)
 #endif
-        for (std::size_t r = 0; r < replicas; ++r) {
+        for (long long r_ll = 0; r_ll < static_cast<long long>(replicas); ++r_ll) {
+            const std::size_t r = static_cast<std::size_t>(r_ll);
             auto &state = states[r];
             auto &rr = replica_rng[r];
             std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -467,7 +468,8 @@ SQAParallelTemperingResult SQAParallelTemperingAnnealer::run_optimal(
 #ifdef _OPENMP
 #pragma omp parallel for if(replicas > 1) schedule(static)
 #endif
-        for (std::size_t r = 0; r < replicas; ++r) {
+        for (long long r_ll = 0; r_ll < static_cast<long long>(replicas); ++r_ll) {
+            const std::size_t r = static_cast<std::size_t>(r_ll);
             auto &state = st[r];
             auto &rr = rngs[r];
             std::uniform_real_distribution<double> uniform(0.0, 1.0);
