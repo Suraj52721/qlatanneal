@@ -3,6 +3,22 @@
 All notable changes to **qanneal** are documented here. This project follows semantic
 versioning (`MAJOR.MINOR.PATCH`).
 
+## 1.0.0
+
+First stable release.
+
+- **New standalone method `sqa_chi`** (`SQAChiAnnealer`, sibling to `sa`/`sqa`/`sqapt`/`ctpimc`,
+  not a `schedule_type` of `sqa`): a generalized worldline-QMC solver whose Γ(t) schedule is
+  built from the susceptibility of the worldline magnetization order parameter,
+  χ_m = n·M·(⟨m²⟩−⟨|m|⟩²). Pilot scan (fresh worldline per grid point) → floor-regularized
+  inverse-CDF time allocation over s = A₀/(A₀+Γ) → two-phase production anneal. Update kernel:
+  an exact-detailed-balance parity-parallel checkerboard sweep over Trotter slices, giving real
+  multi-core speedup even at `replicas=1`. Works on dense or sparse Ising/QUBO problems.
+  `solve(method="sqa_chi", chi_gamma_start/end, chi_scan_points/sweeps/burn,
+  chi_floor_fraction, chi_driver_A0, ...)`. Tests: `tests/test_sqa_chi_annealer.cpp`.
+- **Removed** the bond-susceptibility surrogate schedule (`run_surrogate`,
+  `schedule_type="surrogate"`, `SQASurrogateResult`) added in 0.7.0 — superseded by `sqa_chi`.
+
 ## 0.7.0
 
 Adds the **bond-susceptibility surrogate schedule** — a new, purely additive scheduling

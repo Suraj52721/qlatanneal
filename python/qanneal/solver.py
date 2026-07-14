@@ -27,6 +27,11 @@ except Exception:  # pragma: no cover
     SQAParallelTemperingAnnealer = None
 
 try:
+    from ._qanneal import SQAChiAnnealer
+except Exception:  # pragma: no cover
+    SQAChiAnnealer = None
+
+try:
     import dimod  # type: ignore
 except Exception:  # pragma: no cover
     dimod = None
@@ -399,35 +404,32 @@ def solve(problem: Any,
           optimal_calib_sweeps: int = 10,
           optimal_beta_ramp_fraction: float = 0.3,
           optimal_debug_csv: Optional[str] = None,
-          surrogate_gamma_start: Optional[float] = None,
-          surrogate_gamma_end: Optional[float] = None,
-          surrogate_scan_points: int = 16,
-          surrogate_scan_sweeps: int = 30,
-          surrogate_scan_burn: int = 10,
-          surrogate_chi0_fraction: float = 0.05,
-          surrogate_driver_A0: float = 0.0) -> SolveResult:
+          chi_gamma_start: Optional[float] = None,
+          chi_gamma_end: Optional[float] = None,
+          chi_scan_points: int = 16,
+          chi_scan_sweeps: int = 30,
+          chi_scan_burn: int = 10,
+          chi_floor_fraction: float = 1e-6,
+          chi_driver_A0: float = 0.0) -> SolveResult:
     """
-    Solve a problem using SA, SQA, SQA parallel tempering, or CT-PIMC.
+    Solve a problem using SA, SQA, SQA parallel tempering, CT-PIMC, or SQA-chi.
 
-    method: "sa", "sqa", "sqapt", or "ctpimc"
-    schedule_type: "standard" (default), "optimal", or "surrogate"
+    method: "sa", "sqa", "sqapt", "ctpimc", or "sqa_chi"
+        "sqa_chi" is a standalone worldline-QMC method (sibling to "sqa", not a
+        schedule_type of it): it measures the susceptibility chi_B of the worldline
+        magnetization order parameter m = (1/(n*M)) sum sigma_{i,k} on a pilot scan
+        over s = A0/(A0+gamma), then allocates the annealing time budget with weight
+        w(s) = max(chi_B(s), floor) via tau(s) = int w / int w (chi_B plays the role
+        of 1/Delta(s)^2 in the Roland-Cerf condition), and runs the main anneal along
+        the resulting gamma(t) at fixed beta. Update kernel: an exact-detailed-balance
+        parity-parallel checkerboard sweep over Trotter slices (slices of the same
+        parity never interact directly, so they update fully in parallel), generalized
+        to any Backend (dense or sparse Ising). Ignores `schedule` and `schedule_type`
+        (must be "standard" if given). See chi_* parameters below.
+    schedule_type: "standard" (default) or "optimal"
         "optimal" uses the local adiabaticity ODE from the Roland-Cerf SQA derivation:
         dJ_perp/dt = eps_tilde * chi_B^(-alpha), where chi_B = Var(B) across replicas.
         Supported for methods "sqa" and "sqapt" (including SQAPT+SW via cluster_sweeps > 0).
-        "surrogate" (method "sqa" only) uses the bond-susceptibility surrogate schedule:
-        a pilot SQA scan measures chi_B(s) on a uniform grid of the annealing parameter
-        s = A0/(A0+gamma), then the time budget is allocated with weight
-        w(s) = chi_B(s) + chi_0 via tau(s) = int w / int w (the paper's Roland-Cerf
-        surrogate), and a fresh standard SQA anneal runs along gamma(t) = A0(1-s)/s at
-        fixed beta. Shares optimal_beta / optimal_num_steps / optimal_beta_ramp_fraction /
-        optimal_debug_csv with the "optimal" path.
-    surrogate_gamma_start / surrogate_gamma_end: transverse-field range for the surrogate
-        path (default: max/min gamma of the resolved SQA schedule).
-    surrogate_scan_points / surrogate_scan_sweeps / surrogate_scan_burn: pilot chi_B scan
-        grid size, measurement sweeps, and burn-in sweeps per grid point.
-    surrogate_chi0_fraction: regularization chi_0 = fraction * max(chi_B) that keeps the
-        annealing velocity finite away from the chi_B peak.
-    surrogate_driver_A0: driver scale A0 in s = A0/(A0+gamma); <= 0 uses gamma_start.
     optimal_eps_tilde: adiabaticity parameter epsilon-tilde. Default 0.0 requests budget
         calibration (a short pilot pre-pass picks eps_tilde so the schedule traverses the
         full [j_perp_start, j_perp_end] range within optimal_num_steps). Pass a positive
@@ -441,16 +443,25 @@ def solve(problem: Any,
         budget calibration (sqapt only).
     optimal_debug_csv: if set (sqapt only), write per-step schedule diagnostics
         (phase,step_index,j_perp,chi_B,delta_j,eps_tilde,alpha,floor_hit) to this path,
-        consumable by scripts/plot_schedule_trajectory.py.
+        consumable by scripts/plot_schedule_trajectory.py. Also used by "sqa_chi" (see
+        chi_* below), which writes (phase,index,s,gamma,j_perp,chi_B,beta) rows instead.
+    chi_gamma_start / chi_gamma_end: transverse-field range for the sqa_chi pilot scan
+        and schedule (default: max/min gamma of the resolved auto SQA schedule).
+    chi_scan_points / chi_scan_sweeps / chi_scan_burn: pilot chi_B scan grid size,
+        measurement sweeps, and burn-in sweeps per grid point (fresh worldline per point).
+    chi_floor_fraction: floor = max(chi_floor_fraction * max(chi_B), 1e-12) applied to
+        chi_B before integrating, so a near-zero-chi_B region still gets nonzero time.
+    chi_driver_A0: driver scale A0 in s = A0/(A0+gamma); <= 0 uses chi_gamma_start.
     """
     method = method.lower().strip()
     schedule_type = schedule_type.lower().strip()
-    if method not in ("sa", "sqa", "sqapt", "ctpimc"):
-        raise ValueError("method must be 'sa', 'sqa', 'sqapt', or 'ctpimc'")
-    if schedule_type not in ("standard", "optimal", "surrogate"):
-        raise ValueError("schedule_type must be 'standard', 'optimal', or 'surrogate'")
-    if schedule_type == "surrogate" and method != "sqa":
-        raise ValueError("schedule_type='surrogate' is only supported for method 'sqa'.")
+    if method not in ("sa", "sqa", "sqapt", "ctpimc", "sqa_chi"):
+        raise ValueError("method must be 'sa', 'sqa', 'sqapt', 'ctpimc', or 'sqa_chi'")
+    if schedule_type not in ("standard", "optimal"):
+        raise ValueError("schedule_type must be 'standard' or 'optimal'")
+    if method == "sqa_chi" and schedule_type != "standard":
+        raise ValueError("method='sqa_chi' does not support schedule_type overrides; "
+                         "leave schedule_type='standard' and use the chi_* parameters.")
 
     if logger is None:
         logger = logging.getLogger("qanneal.solve")
@@ -465,7 +476,7 @@ def solve(problem: Any,
         )
 
     if schedule is None:
-        if method == "sqa":
+        if method in ("sqa", "sqa_chi"):
             schedule = auto_schedule_sqa()
         elif method == "ctpimc":
             # Use problem-adaptive schedule with much lower gamma_end.
@@ -481,6 +492,10 @@ def solve(problem: Any,
 
     if method == "sqa":
         annealer = SQAAnnealer(ising, schedule, trotter_slices, replicas, backend=backend)
+    elif method == "sqa_chi":
+        if SQAChiAnnealer is None:
+            raise ValueError("SQAChiAnnealer is not available in this qanneal build. Rebuild/reinstall qanneal.")
+        annealer = SQAChiAnnealer(ising, trotter_slices, replicas, backend=backend)
     elif method == "sqapt":
         if SQAParallelTemperingAnnealer is None:
             raise ValueError("SQAParallelTemperingAnnealer is not available in this qanneal build. Rebuild/reinstall qanneal.")
@@ -546,33 +561,33 @@ def solve(problem: Any,
             100, int(getattr(schedule, 'betas', [None] * 100).__len__()) if schedule is not None else 100
         )
 
-    # --- Pre-compute surrogate schedule parameters (done once, outside the reads loop) ---
-    _sur_beta: float = 0.0
-    _sur_gamma_start: float = 0.0
-    _sur_gamma_end: float = 0.0
-    _sur_num_steps: int = 100
-    if schedule_type == "surrogate":
+    # --- Pre-compute sqa_chi parameters (done once, outside the reads loop) ---
+    _chi_beta: float = 0.0
+    _chi_gamma_start: float = 0.0
+    _chi_gamma_end: float = 0.0
+    _chi_num_steps: int = 100
+    if method == "sqa_chi":
         _auto_beta, _, _ = optimal_j_perp_params(ising, trotter_slices=trotter_slices)
-        _sur_beta = float(optimal_beta) if optimal_beta is not None else _auto_beta
+        _chi_beta = float(optimal_beta) if optimal_beta is not None else _auto_beta
         _sched_gammas = list(getattr(schedule, "gammas", []) or [])
-        if surrogate_gamma_start is not None:
-            _sur_gamma_start = float(surrogate_gamma_start)
+        if chi_gamma_start is not None:
+            _chi_gamma_start = float(chi_gamma_start)
         elif _sched_gammas:
-            _sur_gamma_start = float(max(_sched_gammas))
+            _chi_gamma_start = float(max(_sched_gammas))
         else:
-            _sur_gamma_start = 5.0
-        if surrogate_gamma_end is not None:
-            _sur_gamma_end = float(surrogate_gamma_end)
+            _chi_gamma_start = 5.0
+        if chi_gamma_end is not None:
+            _chi_gamma_end = float(chi_gamma_end)
         elif _sched_gammas:
-            _sur_gamma_end = float(min(_sched_gammas))
+            _chi_gamma_end = float(min(_sched_gammas))
         else:
-            _sur_gamma_end = 0.01
-        if not (_sur_gamma_start > _sur_gamma_end > 0.0):
+            _chi_gamma_end = 0.01
+        if not (_chi_gamma_start > _chi_gamma_end > 0.0):
             raise ValueError(
-                "surrogate schedule requires gamma_start > gamma_end > 0 "
-                f"(got {_sur_gamma_start} and {_sur_gamma_end})."
+                "sqa_chi requires gamma_start > gamma_end > 0 "
+                f"(got {_chi_gamma_start} and {_chi_gamma_end})."
             )
-        _sur_num_steps = int(optimal_num_steps) if optimal_num_steps is not None else max(
+        _chi_num_steps = int(optimal_num_steps) if optimal_num_steps is not None else max(
             100, len(_sched_gammas) if _sched_gammas else 100
         )
 
@@ -603,22 +618,18 @@ def solve(problem: Any,
                 beta_ramp_fraction=float(optimal_beta_ramp_fraction),
             )
             local_trace = list(getattr(res, "energy_trace", []))
-        elif schedule_type == "surrogate" and method == "sqa":
-            # Bond-susceptibility surrogate: pilot chi_B(s) scan -> cumulative
-            # chi_B-weighted time allocation -> fresh standard SQA anneal.
-            res = annealer.run_surrogate(
-                beta=_sur_beta,
-                gamma_start=_sur_gamma_start,
-                gamma_end=_sur_gamma_end,
-                num_steps=_sur_num_steps,
+        elif method == "sqa_chi":
+            res = annealer.run_chi(
+                beta=_chi_beta,
+                gamma_start=_chi_gamma_start,
+                gamma_end=_chi_gamma_end,
+                num_steps=_chi_num_steps,
                 sweeps_per_step=sweeps_per_beta,
-                worldline_sweeps=worldline_sweeps,
-                cluster_sweeps=cluster_sweeps,
-                scan_points=int(surrogate_scan_points),
-                scan_sweeps=int(surrogate_scan_sweeps),
-                scan_burn=int(surrogate_scan_burn),
-                chi0_fraction=float(surrogate_chi0_fraction),
-                driver_A0=float(surrogate_driver_A0),
+                scan_points=int(chi_scan_points),
+                scan_sweeps=int(chi_scan_sweeps),
+                scan_burn=int(chi_scan_burn),
+                chi_floor_fraction=float(chi_floor_fraction),
+                driver_A0=float(chi_driver_A0),
                 beta_ramp_fraction=float(optimal_beta_ramp_fraction),
                 debug_csv_path=(optimal_debug_csv or ""),
             )

@@ -71,40 +71,46 @@
 \tcbuselibrary{listings,skins,breakable}
 
 % Key-equation box
+% NOTE: title text must contrast with the title BAR, not the box body -- the
+% bar's background defaults to colframe (here qnavy), so fonttitle needs a
+% light color (white) or the title renders invisible (navy-on-navy).
 \newtcolorbox{keyeq}[1][]{%
   enhanced,breakable,colback=qnavy!4,colframe=qnavy,boxrule=0pt,
   borderline west={2.5pt}{0pt}{qnavy},arc=1.2mm,
   left=4mm,right=3mm,top=2mm,bottom=2mm,
-  fonttitle=\bfseries\color{qnavy},title={#1}}
+  fonttitle=\bfseries\color{white},title={#1}}
 
 % Informational note
 \newtcolorbox{notebox}[1][Note]{%
   enhanced,breakable,colback=qteal!6,colframe=qteal!60!black,boxrule=0pt,
   borderline west={2.5pt}{0pt}{qteal},arc=1.2mm,
   left=4mm,right=3mm,top=2mm,bottom=2mm,
-  fonttitle=\bfseries\sffamily\color{qteal!50!black},title={#1}}
+  fonttitle=\bfseries\sffamily\color{white},title={#1}}
 
 % Warning
 \newtcolorbox{warnbox}[1][Warning]{%
   enhanced,breakable,colback=qamber!6,colframe=qamber,boxrule=0pt,
   borderline west={2.5pt}{0pt}{qamber},arc=1.2mm,
   left=4mm,right=3mm,top=2mm,bottom=2mm,
-  fonttitle=\bfseries\sffamily\color{qamber!85!black},title={#1}}
+  fonttitle=\bfseries\sffamily\color{white},title={#1}}
 
 % Physics insight
 \newtcolorbox{physbox}[1][Physical picture]{%
   enhanced,breakable,colback=qplum!5,colframe=qplum,boxrule=0pt,
   borderline west={2.5pt}{0pt}{qplum},arc=1.2mm,
   left=4mm,right=3mm,top=2mm,bottom=2mm,
-  fonttitle=\bfseries\sffamily\color{qplum},title={#1}}
+  fonttitle=\bfseries\sffamily\color{white},title={#1}}
 
-% API signature box
+% API signature box. Previously used `attach boxed title to top left` (a
+% title tag floating over the top-left corner); for long function signatures
+% that node ignored any `width`/`text width` constraint and rendered as a
+% single unbroken line running off the page edge. Switched to the same plain
+% full-width title-bar mechanism as keyeq/notebox/warnbox/physbox above,
+% which reliably wraps within the box (and page) width.
 \newtcolorbox{apibox}[1]{%
-  enhanced,breakable,colback=white,colframe=qblue!55,boxrule=0.5pt,arc=1.5mm,
+  enhanced,breakable,colback=white,colframe=qblue!55,colbacktitle=qblue,
+  boxrule=0.5pt,arc=1.5mm,
   left=3.5mm,right=3mm,top=2mm,bottom=2mm,
-  attach boxed title to top left={yshift=-2.6mm,xshift=3mm},
-  boxed title style={colback=qblue,arc=1mm,boxrule=0pt,
-    top=0.6mm,bottom=0.6mm,left=1.6mm,right=1.6mm},
   fonttitle=\bfseries\sffamily\small\color{white},title={#1}}
 
 % ----------------------------------------------------------------------------
@@ -183,7 +189,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small\sffamily\color{qgray}\leftmark}
-\fancyhead[R]{\small\sffamily\color{qgray}\qv{} 0.6.1}
+\fancyhead[R]{\small\sffamily\color{qgray}\qv{} 1.0.0}
 \fancyfoot[C]{\small\sffamily\color{qgray}\thepage}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\headrule}{\color{qnavy!35}\hrule width\headwidth height\headrulewidth}
@@ -241,11 +247,11 @@
 \begin{center}
 \begin{minipage}{0.86\textwidth}
 \centering
-{\Large\color{qnavy}\bfseries Version 0.6.1}\\[1.2em]
+{\Large\color{qnavy}\bfseries Version 1.0.0}\\[1.2em]
 {\large\color{qgray}
 Simulated Annealing \,\textbullet\, Simulated Quantum Annealing\\[0.25em]
-Quantum Parallel Tempering \,\textbullet\, Continuous-Time PIMC\\[0.25em]
-and the Optimal Adaptive $\Jp$ Schedule}\\[2.2em]
+Quantum Parallel Tempering \,\textbullet\, Continuous-Time PIMC \,\textbullet\, SQA-Chi\\[0.25em]
+and Adaptive Schedules from a Measured Susceptibility}\\[2.2em]
 \begin{tcolorbox}[colback=qnavy!4,colframe=qnavy!30,arc=2mm,boxrule=0.5pt,
                   width=0.92\textwidth,left=5mm,right=5mm,top=3mm,bottom=3mm]
 \small This manual is self-contained: every algorithm implemented in \qv{} is
@@ -284,7 +290,7 @@ deployment recipes. No external references are required to use the library.
 \input{chapters/06_sqapt}
 \input{chapters/07_ctpimc}
 
-\part{The Optimal Adaptive Schedule}
+\part{Adaptive Schedules}
 \input{chapters/08_optimal_schedule}
 
 \part{Using the Library}

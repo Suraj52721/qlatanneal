@@ -1,7 +1,7 @@
 \chapter{Python API Reference}
 \label{ch:api}
 
-Complete reference for every public class and function of \qv{}~0.6.1.
+Complete reference for every public class and function of \qv{}~1.0.0.
 Anything documented here is importable directly from the top-level package:
 \code{from qanneal import ...}.
 
@@ -48,7 +48,7 @@ to your original variable labels.
 \toprule
 \textbf{Parameter} & \textbf{Default} & \textbf{Meaning}\\
 \midrule
-\code{method} & \code{"sqa"} & \code{"sa"}, \code{"sqa"}, \code{"sqapt"}, \code{"ctpimc"}.\\
+\code{method} & \code{"sqa"} & \code{"sa"}, \code{"sqa"}, \code{"sqapt"}, \code{"ctpimc"}, \code{"sqa\_chi"}.\\
 \code{reads} & 1 & Independent runs; best over all reads is returned.\\
 \code{sweeps\_per\_beta} & 20 & Metropolis sweeps per schedule step (also serves as \code{sweeps\_per\_step} in optimal mode).\\
 \code{schedule} & \code{None} & Schedule object; auto-tuned per method if \code{None}.\\
@@ -128,6 +128,34 @@ Chapter~\ref{ch:optimal}.
 \code{optimal\_beta} & auto & Fixed $\beta$; SQA default $\max(4/J_{\mathrm{rms}},1)$.\\
 \code{optimal\_beta\_ramp\_fraction} & 0.3 & SQA two-phase split (Section~\ref{sec:optimal-params}).\\
 \code{optimal\_debug\_csv} & \code{""} & Path for the per-step diagnostic CSV.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{SQA-Chi parameters (\code{method="sqa\_chi"})}
+\label{sec:api-sqa-chi}
+
+\code{sqa\_chi} is a standalone method (a distinct \code{SQAChiAnnealer}
+class), not a \code{schedule\_type} of \code{sqa}; theory in
+Section~\ref{sec:sqa-chi}. Shares \code{optimal\_beta},
+\code{optimal\_num\_steps}, \code{optimal\_beta\_ramp\_fraction}, and
+\code{optimal\_debug\_csv} with the optimal-schedule parameters above.
+\code{schedule\_type} must stay \code{"standard"} for this method ---
+\code{solve()} raises \code{ValueError} otherwise.
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{7.6cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Default} & \textbf{Meaning}\\
+\midrule
+\code{chi\_gamma\_start} & auto & $\Gamma$ quantum end; default $\max$ of the resolved auto SQA schedule's $\Gamma$ ladder.\\
+\code{chi\_gamma\_end} & auto & $\Gamma$ classical end; default $\min$ of the resolved auto SQA schedule's $\Gamma$ ladder.\\
+\code{chi\_scan\_points} & 16 & Pilot $\chiB(s)$ grid size (Section~\ref{sec:sqa-chi}).\\
+\code{chi\_scan\_sweeps} & 30 & Measurement sweeps per pilot grid point.\\
+\code{chi\_scan\_burn} & 10 & Burn-in sweeps per pilot grid point (fresh worldline per point).\\
+\code{chi\_floor\_fraction} & $10^{-6}$ & Floor $=$ this fraction of the scan's $\max\chiB$, applied before integrating.\\
+\code{chi\_driver\_A0} & 0.0 & Driver scale $A_0$ in $s=A_0/(A_0+\Gamma)$; $\le0$ resolves to \code{chi\_gamma\_start}.\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -348,6 +376,30 @@ Raises \code{ValueError} if \code{num\_steps==0}, if
 \code{j\_perp\_end<=j\_perp\_start}, or if all sweep counts are zero.
 \end{apibox}
 
+\subsection{\code{SQAChiAnnealer}}
+
+\begin{apibox}{SQAChiAnnealer(hamiltonian, trotter\_slices, replicas=1)}
+Worldline-QMC susceptibility schedule (Section~\ref{sec:sqa-chi}). A
+standalone class, not built on top of \code{SQAAnnealer} --- notably its
+constructor takes \emph{no} \code{schedule} argument, since
+\code{run\_chi} builds its trajectory entirely from
+\code{beta}/\code{gamma\_start}/\code{gamma\_end}.
+\end{apibox}
+
+\begin{apibox}{run\_chi(beta, gamma\_start, gamma\_end, num\_steps,
+sweeps\_per\_step, scan\_points=16, scan\_sweeps=30, scan\_burn=10,
+chi\_floor\_fraction=1e-6, driver\_A0=0.0, beta\_ramp\_fraction=0.3,
+beta\_ramp\_start=0.1, debug\_csv\_path="") $\rightarrow$ SQAChiResult}
+Pilot $\chiB(s)$ scan (fresh worldline per grid point) $\to$
+floor-regularized inverse-CDF time allocation over $s$ $\to$ two-phase
+production anneal ($\beta$-ramp then $\chiB$-weighted $\Gamma(t)$) through
+the parity-parallel checkerboard kernel of Section~\ref{sec:sqa-chi-kernel}.
+Raises \code{invalid\_argument} if \code{num\_steps<2},
+\code{sweeps\_per\_step==0}, \code{beta<=0},
+\code{gamma\_start<=gamma\_end}, \code{scan\_points<4},
+\code{scan\_sweeps==0}, or \code{chi\_floor\_fraction<0}.
+\end{apibox}
+
 \subsection{\code{SQAParallelTemperingAnnealer}}
 
 \begin{apibox}{SQAParallelTemperingAnnealer(hamiltonian, betas, gammas,
@@ -418,6 +470,9 @@ trace averaged over reads. $\Gamma$ must stay $>0$.
 \code{SQAResult} & \code{SQAAnnealer.run/run\_optimal} &
 \code{best\_state}, \code{best\_energy}, \code{energy\_trace},
 \code{j\_perp\_trace}, plus calibration fields (below)\\
+\code{SQAChiResult} & \code{SQAChiAnnealer.run\_chi} &
+\code{best\_state}, \code{best\_energy}, \code{energy\_trace},
+\code{beta/gamma/s\_schedule}, pilot scan + QCP fields (below)\\
 \code{SQAParallelTemperingResult} & \code{SQAParallelTemperingAnnealer} &
 as \code{ParallelTemperingResult} + \code{j\_perp\_trace} + calibration
 fields\\
@@ -448,6 +503,27 @@ Eq.~\eqref{eq:calibrated-eps} (or the value you passed).\\
 actually used after sentinel/auto resolution.\\
 \code{final\_j\_perp} & $\Jp$ reached at the last step
 ($\approx$ \code{resolved\_j\_perp\_end} when calibrated).\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{\code{SQAChiResult}}
+\label{sec:api-sqa-chi-result}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{9.4cm}@{}}
+\toprule
+\textbf{Field} & \textbf{Meaning}\\
+\midrule
+\code{best\_state}, \code{best\_energy} & Best classical projection found during the main anneal.\\
+\code{energy\_trace} & Per-step average energy of the main anneal (phase 1 + phase 2).\\
+\code{beta\_schedule}, \code{gamma\_schedule} & Resolved per-step $(\beta,\Gamma)$ actually run; \code{gamma\_schedule} is monotone non-increasing.\\
+\code{s\_schedule} & Resolved annealing parameter $s=A_0/(A_0+\Gamma)$ per step.\\
+\code{scan\_s}, \code{scan\_gamma}, \code{scan\_chi\_B} & Pilot $\chiB(s)$ scan profile (Section~\ref{sec:sqa-chi}).\\
+\code{s\_star}, \code{gamma\_star}, \code{j\_perp\_star} & Quantum-critical-point estimate from the $\chiB$ peak.\\
+\code{chi\_floor} & Floor actually applied to $\chiB$ before integrating.\\
+\code{driver\_A0} & Resolved driver scale $A_0$.\\
 \bottomrule
 \end{tabular}
 \end{center}

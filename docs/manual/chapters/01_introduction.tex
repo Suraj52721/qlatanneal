@@ -7,7 +7,7 @@
 --- the two canonical formulations into which an enormous range of hard
 combinatorial optimisation problems (partitioning, scheduling, routing,
 satisfiability, portfolio selection, protein folding, \dots) can be encoded.
-It provides four annealing engines, spanning the spectrum from purely
+It provides five annealing engines, spanning the spectrum from purely
 classical thermal optimisation to the closest CPU-side simulation of a
 physical quantum annealer:
 
@@ -21,17 +21,22 @@ Simulated Annealing & \code{sa} & Classical thermal fluctuations & \ref{ch:sa}\\
 Simulated Quantum Annealing & \code{sqa} & Discrete-time path integral (Trotterised QA) & \ref{ch:sqa}\\
 SQA + Parallel Tempering & \code{sqapt} & QA with replica exchange, $(\beta,\Gamma)$ ladder & \ref{ch:sqapt}\\
 Continuous-Time PIMC & \code{ctpimc} & Continuous-time path integral (worldlines) & \ref{ch:ctpimc}\\
+SQA-Chi & \code{sqa\_chi} & Worldline QMC with a $\chiB$-measured schedule & \ref{ch:optimal}\\
 \bottomrule
 \end{tabular}
 \end{center}
 
-All four engines share a single high-level Python entry point,
+All five engines share a single high-level Python entry point,
 \code{solve()}, and a common C++17 core exposed through pybind11 bindings.
-On top of the engines, \qv{} implements a theoretically grounded
-\emph{optimal adaptive $\Jp$ schedule} (Chapter~\ref{ch:optimal}) derived
-from the local adiabaticity condition of Roland and Cerf: the annealing
-trajectory automatically slows down where the simulated system is close to
-its quantum critical point and accelerates elsewhere.
+On top of the engines, \qv{} implements two theoretically grounded adaptive
+schedules (Chapter~\ref{ch:optimal}), both built on a measured
+susceptibility $\chiB$ as a stand-in for the (unknown) spectral gap: the
+\emph{optimal adaptive $\Jp$ schedule}, derived directly from the local
+adiabaticity condition of Roland and Cerf, and the standalone
+\code{sqa\_chi} method, which measures the susceptibility of the worldline
+magnetization instead. Both slow the annealing trajectory down where the
+simulated system is close to its quantum critical point and accelerate it
+elsewhere.
 
 \section{Design philosophy}
 
@@ -77,7 +82,7 @@ launcher across reads and nodes, and SLURM job-array recipes.
 \node[layer,below=of a] (b)
   {\textbf{pybind11 bindings}\quad models \,\textbullet\, schedules \,\textbullet\, annealers \,\textbullet\, observers \,\textbullet\, results};
 \node[layer,below=of b] (c)
-  {\textbf{C++17 core}\quad \code{Annealer} \,\textbullet\, \code{ReplicaAnnealer} \,\textbullet\, \code{SQAAnnealer} \,\textbullet\, \code{SQAParallelTemperingAnnealer} \,\textbullet\, \code{CTPIMCAnnealer}};
+  {\textbf{C++17 core}\quad \code{Annealer} \,\textbullet\, \code{ReplicaAnnealer} \,\textbullet\, \code{SQAAnnealer} \,\textbullet\, \code{SQAChiAnnealer} \,\textbullet\, \code{SQAParallelTemperingAnnealer} \,\textbullet\, \code{CTPIMCAnnealer}};
 \node[layer,below=of c,fill=qnavy!12] (d)
   {\textbf{Parallel runtime}\quad OpenMP (replicas $\times$ slices) \,\textbullet\, optional MPI \,\textbullet\, SLURM array launcher};
 \draw[-{Stealth},thick,qnavy!60] (a) -- (b);
@@ -130,9 +135,11 @@ every engine rests. Read this if you want the mathematics from zero.
 derives the algorithm, states the exact acceptance rules implemented in the
 C++ core, and ends with parameter guidance.
 
-\item[Part III --- The optimal adaptive schedule.] The local-adiabaticity
-derivation, the bond susceptibility $\chiB$, budget calibration, the
-inverse-CDF trajectory, and how to diagnose a run.
+\item[Part III --- Adaptive schedules.] The local-adiabaticity derivation,
+the bond susceptibility $\chiB$, budget calibration, the inverse-CDF
+trajectory, and how to diagnose a run --- plus the standalone
+\code{sqa\_chi} method, which builds its schedule from the susceptibility
+of the worldline magnetization instead.
 
 \item[Part IV --- Using the library.] Installation, the full Python API
 reference, worked end-to-end examples, parallel/HPC deployment,

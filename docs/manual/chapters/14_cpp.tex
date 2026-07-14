@@ -26,6 +26,7 @@ thin binding over it, so every concept of Chapters~\ref{ch:sa}--%
 \code{ReplicaAnnealer} & \code{replica\_annealer.hpp}\\
 \code{ParallelTemperingAnnealer} & \code{parallel\_tempering.hpp}\\
 \code{SQAAnnealer} & \code{sqa\_annealer.hpp}\\
+\code{SQAChiAnnealer} & \code{sqa\_chi\_annealer.hpp}\\
 \code{SQAParallelTemperingAnnealer} & \code{sqa\_parallel\_tempering.hpp}\\
 \code{CTPIMCAnnealer} & \code{ctpimc\_annealer.hpp}\\
 \code{State}, \code{SQAState} & \code{state.hpp}, \code{sqa\_state.hpp}\\
@@ -87,6 +88,19 @@ auto opt = sqa.run_optimal(/*beta=*/1.0,
                            /*alpha=*/15.0/14.0,
                            /*num_steps=*/150, /*sweeps_per_step=*/20,
                            /*worldline_sweeps=*/3);
+\end{cppcode}
+
+\code{sqa\_chi} (Section~\ref{sec:sqa-chi}) is a separate class --- note it
+takes no \code{schedule} argument, since \code{run\_chi} builds its
+trajectory entirely from \code{beta}/\code{gamma\_start}/\code{gamma\_end}:
+
+\begin{cppcode}
+qanneal::SQAChiAnnealer chi(ising, /*trotter_slices=*/32, /*replicas=*/4);
+auto cres = chi.run_chi(/*beta=*/1.0,
+                        /*gamma_start=*/5.0, /*gamma_end=*/0.01,
+                        /*num_steps=*/150, /*sweeps_per_step=*/20,
+                        /*scan_points=*/16, /*scan_sweeps=*/30,
+                        /*scan_burn=*/10);
 \end{cppcode}
 
 Reference build targets and CMake flags are in Chapter~\ref{ch:install};

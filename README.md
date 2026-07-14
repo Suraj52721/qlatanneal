@@ -1,8 +1,8 @@
 # qanneal
 
-**Research-grade Ising/QUBO optimizer** — version 0.7.0
+**Research-grade Ising/QUBO optimizer** — version 1.0.0
 
-Four annealing engines from classical SA to the closest available CPU simulation of quantum annealing, plus a theoretically-grounded **optimal adaptive J⊥ schedule** derived from the local adiabaticity condition.
+Five annealing engines from classical SA to the closest available CPU simulation of quantum annealing, plus a theoretically-grounded **optimal adaptive J⊥ schedule** derived from the local adiabaticity condition.
 
 | Method | Short name | What it simulates |
 |--------|-----------|-------------------|
@@ -10,6 +10,7 @@ Four annealing engines from classical SA to the closest available CPU simulation
 | Simulated Quantum Annealing | `sqa` | Discrete-time path-integral (Trotterized QA) |
 | SQA + Parallel Tempering | `sqapt` | QA with replica exchange on a (β, Γ) ladder |
 | Continuous-Time PIMC | `ctpimc` | Continuous-time path-integral (worldline sampling) |
+| SQA-Chi *(new in 1.0.0)* | `sqa_chi` | Worldline QMC whose Γ(t) schedule is built from the susceptibility of the worldline magnetization |
 
 All engines share a unified `solve()` Python API and a C++17 core with pybind11 bindings.
 
@@ -81,7 +82,7 @@ print(f"Partition diff: {diff}")  # 0.0 = perfect split
 
 ---
 
-## The Four Methods — When to Use Which
+## The Five Methods — When to Use Which
 
 ### `sa` — Simulated Annealing
 Classical Metropolis algorithm with a temperature schedule.
@@ -107,6 +108,14 @@ Samples worldlines in continuous imaginary time using Swendsen–Wang cluster up
 No Trotter discretisation error; better mixing in the high-Γ regime.
 - **Use when**: you want a closer analog to D-Wave sampling; density-matrix–level statistics.
 - **Key extra controls**: `ctpimc_qubits_per_update`, `ctpimc_qubits_per_chain`.
+
+### `sqa_chi` — Worldline-Magnetization Susceptibility Schedule *(new in 1.0.0)*
+A standalone method (not a schedule variant of `sqa`) whose Γ(t) trajectory is built from a
+pilot measurement of χ_B, the susceptibility of the worldline magnetization — see "SQA-Chi:
+Worldline-Magnetization Susceptibility Schedule" below for the full write-up.
+- **Use when**: you want an adaptive schedule without choosing a universality-class exponent,
+  and want the pilot/production kernel to parallelize even at `replicas=1`.
+- **Key extra controls**: `chi_gamma_start/end`, `chi_scan_points/sweeps/burn`, `chi_floor_fraction`.
 
 ---
 
@@ -217,46 +226,56 @@ result = solve(
 
 ---
 
-## Bond-Susceptibility Surrogate Schedule *(new in 0.7.0)*
+## SQA-Chi: Worldline-Magnetization Susceptibility Schedule *(new in 1.0.0)*
 
-A second, independent scheduling strategy alongside `schedule_type="optimal"` above,
-implementing the surrogate described in *"Bond Susceptibility as a Surrogate for Spectral
-Gaps in Quantum Annealing Schedule Design"* (Singh, Nagpal, Chauhan & Hassan). Instead of
-driving J⊥ through the Roland–Cerf exponent χ_B^α, it uses **χ_B itself as the
-time-allocation weight** — the paper shows this smoother, spectrum-free allocation avoids
-two finite-time failure modes of the exact local-adiabatic schedule (a boundary-gap trap
-when the minimum gap sits at the end of the anneal, and a coherent oscillatory instability
-from over-concentrating time near an interior minimum gap).
+A standalone worldline-QMC method — `method="sqa_chi"`, backed by its own `SQAChiAnnealer`
+class, not a `schedule_type` of `sqa`. Like the optimal schedule above, it builds an
+adaptive Γ(t) trajectory from a measured susceptibility instead of a fixed ramp, but it
+uses a **different order parameter** and a **different, more parallel update kernel**:
 
-**How it works**: (1) a pilot SQA scan measures χ_B(s) on a uniform grid of the annealing
-parameter `s = A₀/(A₀+Γ)`; (2) the time budget is allocated with weight
-`w(s) = χ_B(s) + χ₀` (χ₀ a small regularization) via the cumulative integral
-`τ(s) = ∫w / ∫w`, inverted at uniform time targets; (3) a fresh standard SQA anneal runs
-along the resulting Γ(t) at fixed β, preceded by the same proven thermal β-ramp used by
-`schedule_type="optimal"`.
+- **Order parameter**: the worldline magnetization m = mean(σ) over the whole
+  (spins × Trotter-slices) lattice, giving χ_B = n·M·(⟨m²⟩ − ⟨|m|⟩²) — distinct from the
+  bond-sum χ_B = Var(B) that `schedule_type="optimal"` uses.
+- **No universality exponent**: the time budget is allocated by a floor-regularized
+  inverse-CDF of χ_B(s) directly (`w(s) = max(χ_B(s), floor)`), so there's no `α` to tune.
+- **Parity-parallel checkerboard kernel**: Trotter slices of the same parity never interact
+  directly, so every (replica, slice) cell updates in parallel via a single OpenMP
+  `parallel for` — real multi-core speedup even at `replicas=1`, unlike the other SQA-based
+  methods, which only parallelize across replicas. Each cell still runs an exact,
+  detailed-balance-preserving sequential Metropolis sweep, so this is correct for any
+  coupling graph (dense or sparse), not just special-structure problems.
+
+**How it works**: (1) a pilot scan measures χ_B(s) at `chi_scan_points` values of the
+annealing parameter `s = A₀/(A₀+Γ)`, starting from a *fresh* random worldline at every grid
+point (independent probes); (2) the schedule is built from
+`τ(s) = ∫max(χ_B,floor) / ∫max(χ_B,floor)`, inverted at uniform time targets; (3) a fresh
+production anneal runs the resulting Γ(t) at fixed β, preceded by the same phase-1 thermal
+β-ramp used by `schedule_type="optimal"`.
 
 ```python
 result = solve(
     problem,
-    method="sqa",                # surrogate is currently SQA-only
-    schedule_type="surrogate",
+    method="sqa_chi",
     reads=15,
     replicas=4,
+    trotter_slices=32,
     optimal_num_steps=150,
     # optional overrides — all auto-computed from the problem/schedule if omitted:
-    # surrogate_gamma_start=4.0,
-    # surrogate_gamma_end=0.05,
-    # surrogate_scan_points=16,        # pilot chi_B(s) scan resolution
-    # surrogate_chi0_fraction=0.05,    # chi_0 = fraction * max(chi_B)
-    # optimal_debug_csv="surrogate.csv",
+    # chi_gamma_start=4.0,
+    # chi_gamma_end=0.05,
+    # chi_scan_points=16,          # pilot chi_B(s) scan resolution
+    # chi_floor_fraction=1e-6,     # floor = fraction * max(chi_B)
+    # optimal_debug_csv="sqa_chi.csv",
 )
 print(result.best_energy, result.best_sample)
 ```
 
-Direct C++/pybind11 access via `SQAAnnealer.run_surrogate(...)` returns a
-`SQASurrogateResult` with the full pilot χ_B(s) profile, the quantum-critical-point
-estimate from its peak (`s_star`, `gamma_star`, `j_perp_star`), and the resolved
-per-step schedule — see [`docs/api.md`](docs/api.md) for the complete reference.
+Direct C++/pybind11 access via `SQAChiAnnealer(hamiltonian, trotter_slices, replicas).run_chi(...)`
+returns a `SQAChiResult` with the full pilot χ_B(s) profile, the quantum-critical-point
+estimate from its peak (`s_star`, `gamma_star`, `j_perp_star`), and the resolved per-step
+schedule — see [`docs/api.md`](docs/api.md) for the complete reference.
+
+---
 
 ### J⊥ schedule helpers
 
@@ -380,6 +399,18 @@ schedule = SQASchedule.from_vectors(
 |-----------|---------|---------|
 | `ctpimc_qubits_per_update` | 1 | Spins updated per cluster proposal |
 | `ctpimc_qubits_per_chain` | 1 | Chain length for multi-qubit proposals |
+
+### SQA-Chi only (`method="sqa_chi"`) *(new in 1.0.0)*
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `chi_gamma_start` | auto | Starting Γ (quantum end); default: max Γ of the resolved auto SQA schedule |
+| `chi_gamma_end` | auto | Target Γ (classical end); default: min Γ of the resolved auto SQA schedule |
+| `chi_scan_points` | 16 | Pilot χ_B(s) scan grid size |
+| `chi_scan_sweeps` | 30 | Measurement sweeps per scan point |
+| `chi_scan_burn` | 10 | Burn-in sweeps per scan point (fresh worldline per point) |
+| `chi_floor_fraction` | 1e-6 | Floor = this fraction of the scan's max χ_B, applied before integrating |
+| `chi_driver_A0` | 0.0 | Driver scale A₀ in `s = A₀/(A₀+Γ)`; `<= 0` resolves to `chi_gamma_start` |
 
 ---
 

@@ -1,15 +1,34 @@
-\chapter{The Optimal Adaptive \texorpdfstring{$\Jp$}{J-perp} Schedule}
+\chapter{Adaptive Schedules from a Measured Susceptibility}
 \label{ch:optimal}
 
 Standard SQA follows a pre-designed $\Gamma(t)$ ramp fixed before the run
 begins. Such a schedule cannot react to the system it is driving: it may
 rush through the quantum critical region (exciting the system and spoiling
 the solution) while wasting steps in regions where nothing interesting
-happens. This chapter derives \qv's alternative: a schedule that
-\emph{measures} how critical the simulated system currently is --- through
-the bond susceptibility $\chiB$ --- and paces the Trotter coupling $\Jp$
-accordingly. It is available for \code{sqa} and \code{sqapt} (with or
-without SW cluster moves) via \code{schedule\_type="optimal"}.
+happens. This chapter derives \qv's two alternatives: schedules that
+\emph{measure} how critical the simulated system currently is --- through a
+susceptibility $\chiB$ --- and pace the annealing trajectory accordingly.
+They differ in their order parameter, their regularization, and their
+execution model:
+
+\begin{itemize}
+\item \textbf{The optimal adaptive $\Jp$ schedule}
+(Sections~\ref{sec:roland-cerf}--\ref{sec:optimal-diagnostics}) drives the
+Trotter coupling $\Jp$ directly by the local adiabaticity ODE
+$d\Jp/dt=\epst\,\chiB^{-\alpha}$, with $\chiB=\operatorname{Var}(B)$ the
+susceptibility of the imaginary-time bond sum $B$. Available for \code{sqa}
+and \code{sqapt}
+(with or without SW cluster moves) via \code{schedule\_type="optimal"}.
+\item \textbf{The worldline-magnetization susceptibility schedule}
+(Section~\ref{sec:sqa-chi}) instead allocates the fixed step budget over
+the annealing parameter $s$ by a floor-regularized weight
+$w(s)=\max(\chiB(s),\text{floor})$, where $\chiB$ is now the susceptibility
+of the worldline \emph{magnetization} $m$. It is a standalone solver
+\emph{method}, \code{method="sqa\_chi"} --- not a \code{schedule\_type} of
+\code{sqa} --- with its own parity-parallel update kernel.
+\end{itemize}
+
+Section~\ref{sec:sqa-chi-vs-optimal} compares the two directly.
 
 \section{Local adiabaticity: the Roland--Cerf condition}
 \label{sec:roland-cerf}
@@ -498,6 +517,7 @@ automates exactly this check and prints \code{PASS} / \code{DEGENERATE} /
 \end{notebox}
 
 \section{Attribution: schedule effect vs.\ cluster moves}
+\label{sec:attribution}
 
 The adaptive \emph{schedule} and SW \emph{cluster sweeps} are independent
 mechanisms that both help on hard instances. When evaluating the schedule on
@@ -518,3 +538,263 @@ your own problems, keep them separate or you will misattribute gains:
 Only credit ``the optimal schedule'' if the first comparison reproducibly
 favours it; if only the +SW pair improves, the gain belongs to the
 interaction and should be framed as such.
+
+\section{The worldline-magnetization susceptibility schedule
+(\texorpdfstring{\code{sqa\_chi}}{sqa\_chi})}
+\label{sec:sqa-chi}
+
+The schedule above measures $\chiB$ from the imaginary-time bond sum $B$
+and drives $\Jp$ online through \code{SQAAnnealer}. \qv{} 1.0.0 adds a
+second, \emph{standalone} method built around a different order parameter
+and a different execution model: \code{sqa\_chi} is not a
+\code{schedule\_type} flag on \code{sqa} but its own solver class,
+\code{SQAChiAnnealer}, generalized from a worldline-QMC validation script
+into \qv's \code{Backend} abstraction (dense \emph{or} sparse Ising).
+
+\subsection{Order parameter: the worldline magnetization}
+\label{sec:sqa-chi-order-param}
+
+Instead of the bond sum $B$ (Eq.~\eqref{eq:chiB}), \code{sqa\_chi} measures
+the mean spin over the \emph{entire} worldline lattice of a replica ($n$
+spins $\times\,M$ Trotter slices):
+\begin{keyeq}[Worldline magnetization and its susceptibility]
+\begin{equation}
+m=\frac{1}{nM}\sum_{i=1}^{n}\sum_{k=1}^{M}\sigma_i^k,
+\qquad\qquad
+\chiB = nM\bigl(\langle m^2\rangle-\langle|m|\rangle^2\bigr),
+\label{eq:chib-magnetization}
+\end{equation}
+\end{keyeq}
+the ordinary classical-Ising susceptibility of the $(d{+}1)$-dimensional
+Suzuki--Trotter lattice. Like $\operatorname{Var}(B)$, it peaks at the
+quantum critical point --- both are measuring the growth of critical
+fluctuations in the \emph{same} classical system, just through different
+observables of it. $\langle\cdot\rangle$ pools every post-burn sweep sample
+across all replicas, mirroring Section~\ref{sec:chib-est}'s pooling
+(replicas $\ge4$ recommended for the same statistical reasons).
+
+\subsection{The annealing parameter \texorpdfstring{$s$}{s}}
+
+\code{sqa\_chi} works in the annealing parameter $s\in[0,1]$ of the
+symmetric path $A(s)=A_0(1-s)$, $B(s)=s$ (driver and problem Hamiltonian
+weights), rather than in $\Gamma$ directly:
+\begin{keyeq}[Annealing parameter $\leftrightarrow$ transverse field]
+\begin{equation}
+s=\frac{A_0}{A_0+\Gamma},
+\qquad\qquad
+\Gamma=\frac{A_0(1-s)}{s},
+\label{eq:sqa-chi-s}
+\end{equation}
+\end{keyeq}
+so $s=0$ is the fully quantum end ($\Gamma\to\infty$) and $s=1$ the fully
+classical end ($\Gamma=0$); the driver scale $A_0$ is \code{chi\_driver\_A0}
+if positive, otherwise \code{gamma\_start}. This is a property of the
+annealing \emph{path}, not of the $\chiB$ estimator --- the same relation
+underlies every $s$-parametrized construction in \qv.
+
+\subsection{Stage 1: the pilot \texorpdfstring{$\chiB(s)$}{chi\_B(s)} scan}
+
+At \code{scan\_points} (default 16) uniform values of $s$ between
+$s(\gamma_{\mathrm{start}})$ and $s(\gamma_{\mathrm{end}})$, the pilot runs
+\code{scan\_burn}$+$\code{scan\_sweeps} (default $10+30$) parity-parallel
+checkerboard sweeps (Section~\ref{sec:sqa-chi-kernel}) at the corresponding
+fixed $\Jp$.
+
+\begin{warnbox}[Fresh worldline per grid point --- deliberately not carried]
+Unlike \code{run\_optimal}'s calibration pilot and the retired surrogate
+schedule (both of which carry the worldline state between grid points so
+the scan itself gently anneals), \code{sqa\_chi} starts every grid point
+from a \emph{fresh, independently randomized} worldline. Each $\chiB(s)$
+estimate is therefore a statistically independent measurement --- more
+robust against carried-over bias between probes, at the cost of
+re-equilibrating (\code{scan\_burn} sweeps) at every point.
+\end{warnbox}
+
+The scan profile (\code{scan\_s}, \code{scan\_gamma}, \code{scan\_chi\_B})
+and the quantum critical point estimate --- the $\chiB$ peak, recorded as
+(\code{s\_star}, \code{gamma\_star}, \code{j\_perp\_star}) --- are returned
+as diagnostics.
+
+\subsection{Stage 2: floor-regularized time allocation}
+
+The pilot profile is turned into a floor-regularized weight and its
+cumulative integral:
+\begin{keyeq}[Floored weight and its cumulative integral]
+\begin{gather}
+w(s)=\max\bigl(\chiB(s),\,\text{floor}\bigr),
+\qquad
+\text{floor}=\max\Bigl(\code{chi\_floor\_fraction}\cdot\max_s\chiB(s),\,
+10^{-12}\Bigr),
+\label{eq:sqa-chi-weight}\\[4pt]
+\tau(s)=\frac{\displaystyle\int_{s_{\mathrm{lo}}}^{s}w(s')\,ds'}
+             {\displaystyle\int_{s_{\mathrm{lo}}}^{s_{\mathrm{hi}}}w(s')\,ds'} .
+\end{gather}
+\end{keyeq}
+$\chiB(s)$ linearly interpolated between scan points (clamped to the
+boundary value outside $[s_{\mathrm{lo}},s_{\mathrm{hi}}]$). Each of the
+remaining (post-ramp) adaptive steps $k=0,\dots,n_2-1$ is placed at
+$s_k=\tau^{-1}\!\bigl(k/(n_2-1)\bigr)$, evaluated on a fixed 4096-point grid
+by trapezoidal integration and linear inversion, then mapped to
+$\gamma_k=A_0(1-s_k)/s_k$ (clamped into
+$[\gamma_{\mathrm{end}},\gamma_{\mathrm{start}}]$).
+
+\begin{notebox}[A floor, not an additive regularizer]
+The optimal schedule's calibration floor and the retired surrogate
+schedule both use an \emph{additive} term ($\chiB+\chi_0$) to keep the
+weight strictly positive. \code{sqa\_chi} instead \emph{clamps}
+$\chiB$ from below --- a multiplicative floor, matching the reference
+validation script's regularization idea (\code{np.maximum(chi\_B, eps)})
+but generalized: the script's fixed absolute $\epsilon=10^{-8}$ is not
+scale-invariant across problem sizes ($\chiB\sim O(nM)$), so \qv{} scales
+the floor to a fraction of the scan's own peak instead.
+\end{notebox}
+
+\begin{notebox}[Degenerate profile]
+If the pilot scan is flat or non-finite (no measurable $\chiB$ signal),
+\code{floor} falls back to $1.0$ and a \code{cerr} warning is printed;
+$w(s)$ is then constant and the schedule degrades gracefully to a
+linear-in-$s$ ramp rather than failing.
+\end{notebox}
+
+\subsection{The parity-parallel checkerboard kernel}
+\label{sec:sqa-chi-kernel}
+
+Every sweep in \code{sqa\_chi} --- pilot \emph{and} production --- uses a
+kernel that differs from every other engine in \qv{}: it parallelizes
+\emph{within} a single replica's worldline, not just across replicas.
+
+\begin{description}[style=nextline]
+\item[The observation.] Trotter slices of the same parity (even/odd index)
+are never directly coupled: the Trotter term only links slice $k$ to
+$k\pm1$, which always belong to the \emph{other} parity. So while one
+parity's slices are held fixed, every $(\text{replica},\text{slice})$ cell
+of the other parity can be updated completely independently.
+\item[The update.] Each cell runs a full, ordinary sequential single-spin
+Metropolis sweep over its own $n$ spins, using the \code{Backend}'s cached
+local fields (Section~\ref{sec:chib-est}'s $O(1)$/$O(\text{degree})$
+incremental updates) --- exactly the update rule \code{SQAAnnealer} uses,
+just scoped to one slice at a time.
+\item[The parallelism.] All cells of one parity are dispatched to a single
+OpenMP \code{\#pragma omp parallel for}, then the other parity, then the
+lattice's pooled magnetization is read off. Two parity passes make one
+full sweep.
+\end{description}
+
+\begin{warnbox}[Why not update a whole slice's spins simultaneously?]
+A natural-looking shortcut --- flip every spin of a slice at once, using
+the \emph{previous} sweep's neighbour values for the in-plane coupling ---
+is what the reference validation script does. It is only exact detailed
+balance when the spatial coupling graph is \emph{bipartite}; for a general
+(dense or frustrated) Ising problem it silently biases the sampler. The
+per-slice \emph{sequential} update above is exact for any coupling graph,
+while still parallelizing across slices --- the price is that spins
+\emph{within} one slice are still updated one at a time, not vectorised.
+\end{warnbox}
+
+Because the parallel axis is $(\text{replica}\times\text{slice})$ rather
+than replica alone, \code{sqa\_chi} scales across cores even at
+\code{replicas=1} — unlike every other SQA-family engine in \qv{}, whose
+OpenMP parallelism is over replicas only and is therefore inert for a
+single-replica run.
+
+\subsection{Two-phase protocol and the main anneal}
+
+As in Section~\ref{sec:optimal-params}, the first
+$\lceil\code{beta\_ramp\_fraction}\cdot\code{num\_steps}\rceil$ steps ramp
+$\beta$ from \code{beta\_ramp\_start} to the target $\beta$ at fixed
+$\gamma=\gamma_{\mathrm{start}}$ (\code{beta\_ramp\_fraction}$\le0$ disables
+this phase); the remaining steps hold $\beta$ fixed and follow the
+$\gamma_k$ schedule from Stage 2. The resolved
+(\code{beta\_schedule}, \code{gamma\_schedule}) is run on a \emph{fresh}
+worldline (independent of the pilot scan's state, so the production run is
+unbiased) through the same parity-parallel checkerboard kernel.
+
+\subsection{Usage}
+
+\begin{pycode}
+from qanneal import solve
+
+result = solve(
+    problem,
+    method="sqa_chi",                  # standalone method, not schedule_type="..."
+    reads=15,
+    replicas=4,                        # >=4 for a reliable chi_B estimate
+    optimal_num_steps=150,             # shared step budget with schedule_type="optimal"
+    chi_floor_fraction=1e-6,
+    # Optional overrides (auto from the resolved standard schedule if omitted):
+    # chi_gamma_start=5.0,             # default: max gamma of the tuned schedule
+    # chi_gamma_end=0.01,              # default: min gamma of the tuned schedule
+    # chi_scan_points=16, chi_scan_sweeps=30, chi_scan_burn=10,
+    # chi_driver_A0=0.0,               # <=0 resolves to chi_gamma_start
+    # optimal_beta_ramp_fraction=0.3,  # shared two-phase split
+    # optimal_debug_csv="sqa_chi_schedule.csv",
+)
+print(result.best_energy, result.best_sample)
+\end{pycode}
+
+Low-level, with full diagnostics:
+
+\begin{pycode}
+from qanneal import SQAChiAnnealer
+
+ann = SQAChiAnnealer(ising, trotter_slices=32, replicas=4)   # no schedule argument
+
+result = ann.run_chi(
+    beta=1.0, gamma_start=5.0, gamma_end=0.01,
+    num_steps=150, sweeps_per_step=20,
+    scan_points=16, scan_sweeps=30, scan_burn=10,
+    chi_floor_fraction=1e-6, driver_A0=0.0,
+    beta_ramp_fraction=0.3, beta_ramp_start=0.1,
+)
+result.scan_s, result.scan_gamma, result.scan_chi_B     # pilot chi_B(s) profile
+result.s_star, result.gamma_star, result.j_perp_star    # QCP estimate
+result.beta_schedule, result.gamma_schedule, result.s_schedule  # resolved trajectory
+result.best_state, result.best_energy
+\end{pycode}
+
+\subsection{Diagnosing a run}
+
+The same three-panel plot as Section~\ref{sec:optimal-diagnostics} applies
+to \code{gamma\_schedule} / \code{s\_schedule} / \code{energy\_trace}; also
+plot \code{scan\_chi\_B} against \code{scan\_s} to confirm the pilot found a
+clear peak (a flat scan is the \code{sqa\_chi} analogue of a frozen
+adaptive schedule --- see the degenerate-profile fallback above).
+
+When \code{debug\_csv\_path} is set, columns are \code{phase}
+(\code{scan}, \code{beta\_ramp}, or \code{run}), \code{index}, \code{s},
+\code{gamma}, \code{j\_perp}, \code{chi\_B}, and \code{beta}; only
+\code{scan} rows carry a measured \code{chi\_B} --- \code{beta\_ramp}/
+\code{run} rows report the resolved schedule that \code{chi\_B} produced,
+not an online remeasurement.
+
+\subsection{\code{sqa\_chi} vs.\ the optimal \texorpdfstring{$\Jp$}{J-perp} schedule}
+\label{sec:sqa-chi-vs-optimal}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{2.6cm}p{6.0cm}p{6.0cm}@{}}
+\toprule
+& \textbf{Optimal $\Jp$ schedule} & \textbf{\code{sqa\_chi}}\\
+\midrule
+Exposed as & \code{schedule\_type="optimal"} on \code{sqa}/\code{sqapt} & standalone \code{method="sqa\_chi"}\\
+Order parameter & bond sum $B=\sum_{k,i}\sigma_i^k\sigma_i^{k+1}$ & worldline magnetization $m=\text{mean}(\sigma)$\\
+$\chiB$ formula & $\operatorname{Var}(B)$ & $nM(\langle m^2\rangle-\langle|m|\rangle^2)$\\
+Control variable & $\Jp$ directly & $s$ (hence $\Gamma$)\\
+Regularizer & multiplicative floor on $\chiB^{-\alpha}$ & multiplicative floor on $\chiB$ itself\\
+Universality exponent & $\alpha$ required (default $15/14$) & none\\
+Pilot-scan state & carried between grid points & fresh worldline per grid point\\
+Update kernel & sequential per-slice, parallel over replicas & parity-parallel checkerboard over slices \emph{and} replicas\\
+Parallel at \code{replicas=1}? & no & yes\\
+Backends & dense or sparse & dense or sparse\\
+Methods & \code{sqa}, \code{sqapt} (+SW) & \code{sqa\_chi} only\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both precompute their trajectory from a pilot $\chiB$ profile rather than
+integrating online, so neither is vulnerable to the compounding-noise
+failure mode of Section~\ref{sec:calibration}. Treat the choice between
+them as an empirical one: neither dominates the other on every instance,
+and Section~\ref{sec:attribution} applies here as well --- isolate the
+schedule effect from cluster-move effects (where applicable) before
+crediting either one.

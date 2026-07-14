@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(qanneal VERSION 0.7.0 LANGUAGES CXX)
+project(qanneal VERSION 1.0.0 LANGUAGES CXX)
 
 option(QANNEAL_ENABLE_OPENMP "Enable OpenMP" ON)
 option(QANNEAL_ENABLE_CUDA "Enable CUDA backend" OFF)
@@ -24,6 +24,7 @@ add_library(qanneal_core
     src/dense_ising.cpp
     src/sparse_ising.cpp
     src/sqa_annealer.cpp
+    src/sqa_chi_annealer.cpp
     src/sqa_parallel_tempering.cpp
     src/replica_annealer.cpp
     src/parallel_tempering.cpp
@@ -174,9 +175,9 @@ if(QANNEAL_BUILD_TESTS)
     target_link_libraries(qanneal_sqa_optimal_tests PRIVATE qanneal_core)
     add_test(NAME qanneal_sqa_optimal_tests COMMAND qanneal_sqa_optimal_tests)
 
-    add_executable(qanneal_sqa_surrogate_tests tests/test_sqa_surrogate_schedule.cpp)
-    target_link_libraries(qanneal_sqa_surrogate_tests PRIVATE qanneal_core)
-    add_test(NAME qanneal_sqa_surrogate_tests COMMAND qanneal_sqa_surrogate_tests)
+    add_executable(qanneal_sqa_chi_tests tests/test_sqa_chi_annealer.cpp)
+    target_link_libraries(qanneal_sqa_chi_tests PRIVATE qanneal_core)
+    add_test(NAME qanneal_sqa_chi_tests COMMAND qanneal_sqa_chi_tests)
 endif()
 
 install(TARGETS qanneal_core EXPORT qannealTargets
