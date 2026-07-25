@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(qanneal VERSION 2.0.0 LANGUAGES CXX)
+project(qanneal VERSION 2.0.1 LANGUAGES CXX)
 
 option(QANNEAL_ENABLE_OPENMP "Enable OpenMP" ON)
 option(QANNEAL_ENABLE_CUDA "Enable CUDA backend" OFF)

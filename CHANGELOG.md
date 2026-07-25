@@ -3,6 +3,14 @@
 All notable changes to **qanneal** are documented here. This project follows semantic
 versioning (`MAJOR.MINOR.PATCH`).
 
+## 2.0.1
+
+- **Fixed CI**: macOS wheel builds targeted `macos-13`, which GitHub retired in December 2025,
+  causing every wheel/publish workflow run to hang and eventually fail. `x86_64` macOS wheels
+  are now cross-compiled on `macos-14` (Apple Silicon) runners instead.
+- Added the missing `Operating System :: Microsoft :: Windows` PyPI classifier (Windows wheels
+  have always been built and published; this was metadata-only).
+
 ## 2.0.0
 
 - **Native higher-order Ising (HUBO) support**: new `HigherOrderIsing(terms, n)` Hamiltonian
